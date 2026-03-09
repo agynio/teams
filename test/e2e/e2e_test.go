@@ -1,0 +1,254 @@
+package e2e
+
+import (
+	"context"
+	"net"
+	"testing"
+	"time"
+
+	teamsv1 "github.com/agynio/teams/gen/go/agynio/api/teams/v1"
+	"github.com/agynio/teams/internal/db"
+	"github.com/agynio/teams/internal/server"
+	"github.com/agynio/teams/internal/store"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
+)
+
+func TestTeamsServiceE2E(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	require.NoError(t, db.ApplyMigrations(ctx, pool))
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer()
+	teamsv1.RegisterTeamsServiceServer(grpcServer, server.New(store.New(pool)))
+
+	go func() {
+		_ = grpcServer.Serve(lis)
+	}()
+	defer grpcServer.GracefulStop()
+
+	conn, err := grpc.DialContext(ctx, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	require.NoError(t, err)
+	defer conn.Close()
+
+	client := teamsv1.NewTeamsServiceClient(conn)
+
+	agentConfig1 := &teamsv1.AgentConfig{
+		Model:                     "gpt-4",
+		SystemPrompt:              "system",
+		DebounceMs:                100,
+		WhenBusy:                  teamsv1.AgentWhenBusy_AGENT_WHEN_BUSY_WAIT,
+		ProcessBuffer:             teamsv1.AgentProcessBuffer_AGENT_PROCESS_BUFFER_ALL_TOGETHER,
+		SendFinalResponseToThread: true,
+		SummarizationKeepTokens:   50,
+		SummarizationMaxTokens:    500,
+		RestrictOutput:            false,
+		RestrictionMessage:        "",
+		RestrictionMaxInjections:  2,
+		Name:                      "alpha",
+		Role:                      "engineer",
+	}
+
+	agentResp1, err := client.CreateAgent(ctx, &teamsv1.CreateAgentRequest{
+		Title:       "Agent Alpha",
+		Description: "First agent",
+		Config:      agentConfig1,
+	})
+	require.NoError(t, err)
+	agentID1 := agentResp1.Agent.Meta.Id
+
+	agentConfig2 := proto.Clone(agentConfig1).(*teamsv1.AgentConfig)
+	agentConfig2.Name = "beta"
+	agentConfig2.Role = "analyst"
+	agentResp2, err := client.CreateAgent(ctx, &teamsv1.CreateAgentRequest{
+		Title:       "Agent Beta",
+		Description: "Second agent",
+		Config:      agentConfig2,
+	})
+	require.NoError(t, err)
+	agentID2 := agentResp2.Agent.Meta.Id
+
+	updatedAgentResp, err := client.UpdateAgent(ctx, &teamsv1.UpdateAgentRequest{
+		Id:    agentID1,
+		Title: proto.String("Agent Alpha Updated"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Agent Alpha Updated", updatedAgentResp.Agent.Title)
+
+	listAgentsResp1, err := client.ListAgents(ctx, &teamsv1.ListAgentsRequest{PageSize: 1})
+	require.NoError(t, err)
+	require.Len(t, listAgentsResp1.Agents, 1)
+	require.NotEmpty(t, listAgentsResp1.NextPageToken)
+
+	listAgentsResp2, err := client.ListAgents(ctx, &teamsv1.ListAgentsRequest{PageToken: listAgentsResp1.NextPageToken})
+	require.NoError(t, err)
+	require.Len(t, listAgentsResp2.Agents, 1)
+	require.Empty(t, listAgentsResp2.NextPageToken)
+
+	searchAgentsResp, err := client.ListAgents(ctx, &teamsv1.ListAgentsRequest{Query: "alpha"})
+	require.NoError(t, err)
+	require.Len(t, searchAgentsResp.Agents, 1)
+	require.Equal(t, agentID1, searchAgentsResp.Agents[0].Meta.Id)
+
+	toolConfig1, err := structpb.NewStruct(map[string]any{"scope": "local"})
+	require.NoError(t, err)
+	toolResp1, err := client.CreateTool(ctx, &teamsv1.CreateToolRequest{
+		Type:        teamsv1.ToolType_TOOL_TYPE_MEMORY,
+		Name:        "memory",
+		Description: "memory tool",
+		Config:      toolConfig1,
+	})
+	require.NoError(t, err)
+	toolID1 := toolResp1.Tool.Meta.Id
+
+	toolConfig2, err := structpb.NewStruct(map[string]any{"mode": "auto"})
+	require.NoError(t, err)
+	_, err = client.CreateTool(ctx, &teamsv1.CreateToolRequest{
+		Type:        teamsv1.ToolType_TOOL_TYPE_MANAGE,
+		Name:        "manage",
+		Description: "manage tool",
+		Config:      toolConfig2,
+	})
+	require.NoError(t, err)
+
+	updateToolResp, err := client.UpdateTool(ctx, &teamsv1.UpdateToolRequest{
+		Id:          toolID1,
+		Description: proto.String("memory tool updated"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "memory tool updated", updateToolResp.Tool.Description)
+
+	listToolsResp, err := client.ListTools(ctx, &teamsv1.ListToolsRequest{Type: teamsv1.ToolType_TOOL_TYPE_MEMORY})
+	require.NoError(t, err)
+	require.Len(t, listToolsResp.Tools, 1)
+	require.Equal(t, toolID1, listToolsResp.Tools[0].Meta.Id)
+
+	mcpConfig := &teamsv1.McpServerConfig{
+		Namespace:           "default",
+		Command:             "mcp",
+		Workdir:             "/srv",
+		Env:                 []*teamsv1.McpEnvItem{{Name: "API_KEY", Value: "token"}},
+		RequestTimeoutMs:    1000,
+		StartupTimeoutMs:    2000,
+		HeartbeatIntervalMs: 5000,
+		StaleTimeoutMs:      10000,
+		Restart:             &teamsv1.McpServerRestartConfig{MaxAttempts: 3, BackoffMs: 250},
+	}
+
+	mcpResp, err := client.CreateMcpServer(ctx, &teamsv1.CreateMcpServerRequest{
+		Title:       "MCP Server",
+		Description: "MCP server",
+		Config:      mcpConfig,
+	})
+	require.NoError(t, err)
+	mcpID := mcpResp.McpServer.Meta.Id
+
+	updatedMcpResp, err := client.UpdateMcpServer(ctx, &teamsv1.UpdateMcpServerRequest{
+		Id:    mcpID,
+		Title: proto.String("MCP Server Updated"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "MCP Server Updated", updatedMcpResp.McpServer.Title)
+
+	listMcpResp, err := client.ListMcpServers(ctx, &teamsv1.ListMcpServersRequest{PageSize: 1})
+	require.NoError(t, err)
+	require.Len(t, listMcpResp.McpServers, 1)
+
+	nixConfig, err := structpb.NewStruct(map[string]any{"shell": "bash"})
+	require.NoError(t, err)
+	workspaceConfig := &teamsv1.WorkspaceConfig{
+		Image:         "ubuntu:latest",
+		Env:           []*teamsv1.WorkspaceEnvItem{{Name: "PATH", Value: "/usr/bin"}},
+		InitialScript: "echo ready",
+		CpuLimit:      "1",
+		MemoryLimit:   "512Mi",
+		Platform:      teamsv1.WorkspacePlatform_WORKSPACE_PLATFORM_LINUX_AMD64,
+		EnableDind:    true,
+		TtlSeconds:    3600,
+		Nix:           nixConfig,
+		Volumes:       &teamsv1.WorkspaceVolumeConfig{Enabled: true, MountPath: "/workspace"},
+	}
+	workspaceResp, err := client.CreateWorkspaceConfiguration(ctx, &teamsv1.CreateWorkspaceConfigurationRequest{
+		Title:       "Workspace",
+		Description: "Workspace config",
+		Config:      workspaceConfig,
+	})
+	require.NoError(t, err)
+	workspaceID := workspaceResp.WorkspaceConfiguration.Meta.Id
+
+	updatedWorkspaceResp, err := client.UpdateWorkspaceConfiguration(ctx, &teamsv1.UpdateWorkspaceConfigurationRequest{
+		Id:          workspaceID,
+		Description: proto.String("Workspace config updated"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Workspace config updated", updatedWorkspaceResp.WorkspaceConfiguration.Description)
+
+	listWorkspaceResp, err := client.ListWorkspaceConfigurations(ctx, &teamsv1.ListWorkspaceConfigurationsRequest{PageSize: 1})
+	require.NoError(t, err)
+	require.Len(t, listWorkspaceResp.WorkspaceConfigurations, 1)
+
+	memoryConfig := &teamsv1.MemoryBucketConfig{Scope: teamsv1.MemoryBucketScope_MEMORY_BUCKET_SCOPE_GLOBAL, CollectionPrefix: "mem"}
+	memoryResp, err := client.CreateMemoryBucket(ctx, &teamsv1.CreateMemoryBucketRequest{
+		Title:       "Memory Bucket",
+		Description: "Memory bucket",
+		Config:      memoryConfig,
+	})
+	require.NoError(t, err)
+	memoryID := memoryResp.MemoryBucket.Meta.Id
+
+	updatedMemoryResp, err := client.UpdateMemoryBucket(ctx, &teamsv1.UpdateMemoryBucketRequest{
+		Id:    memoryID,
+		Title: proto.String("Memory Bucket Updated"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Memory Bucket Updated", updatedMemoryResp.MemoryBucket.Title)
+
+	listMemoryResp, err := client.ListMemoryBuckets(ctx, &teamsv1.ListMemoryBucketsRequest{PageSize: 1})
+	require.NoError(t, err)
+	require.Len(t, listMemoryResp.MemoryBuckets, 1)
+
+	attachmentResp, err := client.CreateAttachment(ctx, &teamsv1.CreateAttachmentRequest{
+		Kind:     teamsv1.AttachmentKind_ATTACHMENT_KIND_AGENT_TOOL,
+		SourceId: agentID1,
+		TargetId: toolID1,
+	})
+	require.NoError(t, err)
+	attachmentID := attachmentResp.Attachment.Meta.Id
+
+	getAttachmentResp, err := client.GetAttachment(ctx, &teamsv1.GetAttachmentRequest{Id: attachmentID})
+	require.NoError(t, err)
+	require.Equal(t, attachmentID, getAttachmentResp.Attachment.Meta.Id)
+	require.Equal(t, agentID1, getAttachmentResp.Attachment.SourceId)
+	require.Equal(t, toolID1, getAttachmentResp.Attachment.TargetId)
+
+	listAttachmentResp, err := client.ListAttachments(ctx, &teamsv1.ListAttachmentsRequest{
+		SourceType: teamsv1.EntityType_ENTITY_TYPE_AGENT,
+		SourceId:   agentID1,
+		PageSize:   1,
+	})
+	require.NoError(t, err)
+	require.Len(t, listAttachmentResp.Attachments, 1)
+	require.Equal(t, attachmentID, listAttachmentResp.Attachments[0].Meta.Id)
+
+	_, err = client.DeleteAttachment(ctx, &teamsv1.DeleteAttachmentRequest{Id: attachmentID})
+	require.NoError(t, err)
+
+	listAttachmentAfterDelete, err := client.ListAttachments(ctx, &teamsv1.ListAttachmentsRequest{SourceId: agentID1})
+	require.NoError(t, err)
+	require.Len(t, listAttachmentAfterDelete.Attachments, 0)
+
+	_, err = client.DeleteAgent(ctx, &teamsv1.DeleteAgentRequest{Id: agentID2})
+	require.NoError(t, err)
+}
