@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,9 +32,6 @@ func scanAgent(row pgx.Row) (Agent, error) {
 	); err != nil {
 		return Agent{}, err
 	}
-	if config == nil {
-		return Agent{}, fmt.Errorf("agent config is null")
-	}
 	agent.Config = JSONData(config)
 	return agent, nil
 }
@@ -54,9 +50,6 @@ func scanTool(row pgx.Row) (Tool, error) {
 	); err != nil {
 		return Tool{}, err
 	}
-	if config == nil {
-		return Tool{}, fmt.Errorf("tool config is null")
-	}
 	tool.Config = JSONData(config)
 	return tool, nil
 }
@@ -73,9 +66,6 @@ func scanMcpServer(row pgx.Row) (McpServer, error) {
 		&server.Meta.UpdatedAt,
 	); err != nil {
 		return McpServer{}, err
-	}
-	if config == nil {
-		return McpServer{}, fmt.Errorf("mcp server config is null")
 	}
 	server.Config = JSONData(config)
 	return server, nil
@@ -94,9 +84,6 @@ func scanWorkspaceConfiguration(row pgx.Row) (WorkspaceConfiguration, error) {
 	); err != nil {
 		return WorkspaceConfiguration{}, err
 	}
-	if config == nil {
-		return WorkspaceConfiguration{}, fmt.Errorf("workspace configuration config is null")
-	}
 	workspace.Config = JSONData(config)
 	return workspace, nil
 }
@@ -113,9 +100,6 @@ func scanMemoryBucket(row pgx.Row) (MemoryBucket, error) {
 		&bucket.Meta.UpdatedAt,
 	); err != nil {
 		return MemoryBucket{}, err
-	}
-	if config == nil {
-		return MemoryBucket{}, fmt.Errorf("memory bucket config is null")
 	}
 	bucket.Config = JSONData(config)
 	return bucket, nil
@@ -164,7 +148,7 @@ func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 	agent, err := scanAgent(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Agent{}, ErrAgentNotFound
+			return Agent{}, NotFound("agent")
 		}
 		return Agent{}, err
 	}
@@ -172,42 +156,26 @@ func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 }
 
 func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdate) (Agent, error) {
-	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
-	paramIndex := 1
-
+	builder := updateBuilder{}
 	if update.Title != nil {
-		setClauses = append(setClauses, fmt.Sprintf("title = $%d", paramIndex))
-		args = append(args, *update.Title)
-		paramIndex++
+		builder.add("title", *update.Title)
 	}
 	if update.Description != nil {
-		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIndex))
-		args = append(args, *update.Description)
-		paramIndex++
+		builder.add("description", *update.Description)
 	}
 	if update.Config != nil {
-		setClauses = append(setClauses, fmt.Sprintf("config = $%d", paramIndex))
-		args = append(args, *update.Config)
-		paramIndex++
+		builder.add("config", *update.Config)
 	}
 
-	if len(setClauses) == 0 {
+	if builder.empty() {
 		return Agent{}, fmt.Errorf("agent update requires at least one field")
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-
-	query := fmt.Sprintf(
-		"UPDATE agents SET %s WHERE id = $%d RETURNING id, title, description, config, created_at, updated_at",
-		strings.Join(setClauses, ", "),
-		paramIndex,
-	)
+	query, args := builder.build("agents", "id, title, description, config, created_at, updated_at", id)
 	row := s.pool.QueryRow(ctx, query, args...)
 	agent, err := scanAgent(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Agent{}, ErrAgentNotFound
+			return Agent{}, NotFound("agent")
 		}
 		return Agent{}, err
 	}
@@ -220,68 +188,31 @@ func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrAgentNotFound
+		return NotFound("agent")
 	}
 	return nil
 }
 
 func (s *Store) ListAgents(ctx context.Context, filter AgentFilter, pageSize int32, cursor *PageCursor) (AgentListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, title, description, config, created_at, updated_at FROM agents`)
-
-	args := make([]any, 0, 3)
 	clauses := make([]string, 0, 2)
-	paramIndex := 1
-
+	args := make([]any, 0, 2)
 	if filter.Query != "" {
-		clauses = append(clauses, fmt.Sprintf("(config->>'name' ILIKE $%d OR config->>'role' ILIKE $%d)", paramIndex, paramIndex))
+		placeholder := len(args) + 1
+		clauses = append(clauses, fmt.Sprintf("(title ILIKE $%d OR description ILIKE $%d)", placeholder, placeholder))
 		args = append(args, "%"+filter.Query+"%")
-		paramIndex++
-	}
-	if cursor != nil {
-		clauses = append(clauses, fmt.Sprintf("id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
 	}
 
-	if len(clauses) > 0 {
-		query.WriteString(" WHERE ")
-		query.WriteString(strings.Join(clauses, " AND "))
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	agents, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, title, description, config, created_at, updated_at FROM agents`,
+		clauses,
+		args,
+		cursor,
+		pageSize,
+		scanAgent,
+		func(agent Agent) uuid.UUID { return agent.Meta.ID },
+	)
 	if err != nil {
 		return AgentListResult{}, err
-	}
-	defer rows.Close()
-
-	agents := make([]Agent, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(agents)) == limit {
-			hasMore = true
-			break
-		}
-		agent, err := scanAgent(rows)
-		if err != nil {
-			return AgentListResult{}, err
-		}
-		agents = append(agents, agent)
-		lastID = agent.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return AgentListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return AgentListResult{Agents: agents, NextCursor: nextCursor}, nil
 }
@@ -313,7 +244,7 @@ func (s *Store) GetTool(ctx context.Context, id uuid.UUID) (Tool, error) {
 	tool, err := scanTool(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Tool{}, ErrToolNotFound
+			return Tool{}, NotFound("tool")
 		}
 		return Tool{}, err
 	}
@@ -321,42 +252,26 @@ func (s *Store) GetTool(ctx context.Context, id uuid.UUID) (Tool, error) {
 }
 
 func (s *Store) UpdateTool(ctx context.Context, id uuid.UUID, update ToolUpdate) (Tool, error) {
-	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
-	paramIndex := 1
-
+	builder := updateBuilder{}
 	if update.Name != nil {
-		setClauses = append(setClauses, fmt.Sprintf("name = $%d", paramIndex))
-		args = append(args, *update.Name)
-		paramIndex++
+		builder.add("name", *update.Name)
 	}
 	if update.Description != nil {
-		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIndex))
-		args = append(args, *update.Description)
-		paramIndex++
+		builder.add("description", *update.Description)
 	}
 	if update.Config != nil {
-		setClauses = append(setClauses, fmt.Sprintf("config = $%d", paramIndex))
-		args = append(args, *update.Config)
-		paramIndex++
+		builder.add("config", *update.Config)
 	}
 
-	if len(setClauses) == 0 {
+	if builder.empty() {
 		return Tool{}, fmt.Errorf("tool update requires at least one field")
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-
-	query := fmt.Sprintf(
-		"UPDATE tools SET %s WHERE id = $%d RETURNING id, type, name, description, config, created_at, updated_at",
-		strings.Join(setClauses, ", "),
-		paramIndex,
-	)
+	query, args := builder.build("tools", "id, type, name, description, config, created_at, updated_at", id)
 	row := s.pool.QueryRow(ctx, query, args...)
 	tool, err := scanTool(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Tool{}, ErrToolNotFound
+			return Tool{}, NotFound("tool")
 		}
 		return Tool{}, err
 	}
@@ -369,68 +284,29 @@ func (s *Store) DeleteTool(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrToolNotFound
+		return NotFound("tool")
 	}
 	return nil
 }
 
 func (s *Store) ListTools(ctx context.Context, filter ToolFilter, pageSize int32, cursor *PageCursor) (ToolListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, type, name, description, config, created_at, updated_at FROM tools`)
-
-	args := make([]any, 0, 3)
 	clauses := make([]string, 0, 2)
-	paramIndex := 1
-
+	args := make([]any, 0, 2)
 	if filter.Type != nil {
-		clauses = append(clauses, fmt.Sprintf("type = $%d", paramIndex))
-		args = append(args, *filter.Type)
-		paramIndex++
-	}
-	if cursor != nil {
-		clauses = append(clauses, fmt.Sprintf("id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "type = $%d", *filter.Type)
 	}
 
-	if len(clauses) > 0 {
-		query.WriteString(" WHERE ")
-		query.WriteString(strings.Join(clauses, " AND "))
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	tools, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, type, name, description, config, created_at, updated_at FROM tools`,
+		clauses,
+		args,
+		cursor,
+		pageSize,
+		scanTool,
+		func(tool Tool) uuid.UUID { return tool.Meta.ID },
+	)
 	if err != nil {
 		return ToolListResult{}, err
-	}
-	defer rows.Close()
-
-	tools := make([]Tool, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(tools)) == limit {
-			hasMore = true
-			break
-		}
-		tool, err := scanTool(rows)
-		if err != nil {
-			return ToolListResult{}, err
-		}
-		tools = append(tools, tool)
-		lastID = tool.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return ToolListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return ToolListResult{Tools: tools, NextCursor: nextCursor}, nil
 }
@@ -461,7 +337,7 @@ func (s *Store) GetMcpServer(ctx context.Context, id uuid.UUID) (McpServer, erro
 	server, err := scanMcpServer(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return McpServer{}, ErrMcpServerNotFound
+			return McpServer{}, NotFound("mcp server")
 		}
 		return McpServer{}, err
 	}
@@ -469,42 +345,26 @@ func (s *Store) GetMcpServer(ctx context.Context, id uuid.UUID) (McpServer, erro
 }
 
 func (s *Store) UpdateMcpServer(ctx context.Context, id uuid.UUID, update McpServerUpdate) (McpServer, error) {
-	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
-	paramIndex := 1
-
+	builder := updateBuilder{}
 	if update.Title != nil {
-		setClauses = append(setClauses, fmt.Sprintf("title = $%d", paramIndex))
-		args = append(args, *update.Title)
-		paramIndex++
+		builder.add("title", *update.Title)
 	}
 	if update.Description != nil {
-		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIndex))
-		args = append(args, *update.Description)
-		paramIndex++
+		builder.add("description", *update.Description)
 	}
 	if update.Config != nil {
-		setClauses = append(setClauses, fmt.Sprintf("config = $%d", paramIndex))
-		args = append(args, *update.Config)
-		paramIndex++
+		builder.add("config", *update.Config)
 	}
 
-	if len(setClauses) == 0 {
+	if builder.empty() {
 		return McpServer{}, fmt.Errorf("mcp server update requires at least one field")
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-
-	query := fmt.Sprintf(
-		"UPDATE mcp_servers SET %s WHERE id = $%d RETURNING id, title, description, config, created_at, updated_at",
-		strings.Join(setClauses, ", "),
-		paramIndex,
-	)
+	query, args := builder.build("mcp_servers", "id, title, description, config, created_at, updated_at", id)
 	row := s.pool.QueryRow(ctx, query, args...)
 	server, err := scanMcpServer(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return McpServer{}, ErrMcpServerNotFound
+			return McpServer{}, NotFound("mcp server")
 		}
 		return McpServer{}, err
 	}
@@ -517,56 +377,23 @@ func (s *Store) DeleteMcpServer(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrMcpServerNotFound
+		return NotFound("mcp server")
 	}
 	return nil
 }
 
 func (s *Store) ListMcpServers(ctx context.Context, pageSize int32, cursor *PageCursor) (McpServerListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, title, description, config, created_at, updated_at FROM mcp_servers`)
-
-	args := make([]any, 0, 2)
-	paramIndex := 1
-	if cursor != nil {
-		query.WriteString(fmt.Sprintf(" WHERE id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	servers, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, title, description, config, created_at, updated_at FROM mcp_servers`,
+		nil,
+		nil,
+		cursor,
+		pageSize,
+		scanMcpServer,
+		func(server McpServer) uuid.UUID { return server.Meta.ID },
+	)
 	if err != nil {
 		return McpServerListResult{}, err
-	}
-	defer rows.Close()
-
-	servers := make([]McpServer, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(servers)) == limit {
-			hasMore = true
-			break
-		}
-		server, err := scanMcpServer(rows)
-		if err != nil {
-			return McpServerListResult{}, err
-		}
-		servers = append(servers, server)
-		lastID = server.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return McpServerListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return McpServerListResult{McpServers: servers, NextCursor: nextCursor}, nil
 }
@@ -597,7 +424,7 @@ func (s *Store) GetWorkspaceConfiguration(ctx context.Context, id uuid.UUID) (Wo
 	workspace, err := scanWorkspaceConfiguration(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return WorkspaceConfiguration{}, ErrWorkspaceConfigurationNotFound
+			return WorkspaceConfiguration{}, NotFound("workspace configuration")
 		}
 		return WorkspaceConfiguration{}, err
 	}
@@ -605,42 +432,26 @@ func (s *Store) GetWorkspaceConfiguration(ctx context.Context, id uuid.UUID) (Wo
 }
 
 func (s *Store) UpdateWorkspaceConfiguration(ctx context.Context, id uuid.UUID, update WorkspaceConfigurationUpdate) (WorkspaceConfiguration, error) {
-	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
-	paramIndex := 1
-
+	builder := updateBuilder{}
 	if update.Title != nil {
-		setClauses = append(setClauses, fmt.Sprintf("title = $%d", paramIndex))
-		args = append(args, *update.Title)
-		paramIndex++
+		builder.add("title", *update.Title)
 	}
 	if update.Description != nil {
-		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIndex))
-		args = append(args, *update.Description)
-		paramIndex++
+		builder.add("description", *update.Description)
 	}
 	if update.Config != nil {
-		setClauses = append(setClauses, fmt.Sprintf("config = $%d", paramIndex))
-		args = append(args, *update.Config)
-		paramIndex++
+		builder.add("config", *update.Config)
 	}
 
-	if len(setClauses) == 0 {
+	if builder.empty() {
 		return WorkspaceConfiguration{}, fmt.Errorf("workspace configuration update requires at least one field")
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-
-	query := fmt.Sprintf(
-		"UPDATE workspace_configurations SET %s WHERE id = $%d RETURNING id, title, description, config, created_at, updated_at",
-		strings.Join(setClauses, ", "),
-		paramIndex,
-	)
+	query, args := builder.build("workspace_configurations", "id, title, description, config, created_at, updated_at", id)
 	row := s.pool.QueryRow(ctx, query, args...)
 	workspace, err := scanWorkspaceConfiguration(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return WorkspaceConfiguration{}, ErrWorkspaceConfigurationNotFound
+			return WorkspaceConfiguration{}, NotFound("workspace configuration")
 		}
 		return WorkspaceConfiguration{}, err
 	}
@@ -653,56 +464,23 @@ func (s *Store) DeleteWorkspaceConfiguration(ctx context.Context, id uuid.UUID) 
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrWorkspaceConfigurationNotFound
+		return NotFound("workspace configuration")
 	}
 	return nil
 }
 
 func (s *Store) ListWorkspaceConfigurations(ctx context.Context, pageSize int32, cursor *PageCursor) (WorkspaceConfigurationListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, title, description, config, created_at, updated_at FROM workspace_configurations`)
-
-	args := make([]any, 0, 2)
-	paramIndex := 1
-	if cursor != nil {
-		query.WriteString(fmt.Sprintf(" WHERE id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	workspaces, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, title, description, config, created_at, updated_at FROM workspace_configurations`,
+		nil,
+		nil,
+		cursor,
+		pageSize,
+		scanWorkspaceConfiguration,
+		func(workspace WorkspaceConfiguration) uuid.UUID { return workspace.Meta.ID },
+	)
 	if err != nil {
 		return WorkspaceConfigurationListResult{}, err
-	}
-	defer rows.Close()
-
-	workspaces := make([]WorkspaceConfiguration, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(workspaces)) == limit {
-			hasMore = true
-			break
-		}
-		workspace, err := scanWorkspaceConfiguration(rows)
-		if err != nil {
-			return WorkspaceConfigurationListResult{}, err
-		}
-		workspaces = append(workspaces, workspace)
-		lastID = workspace.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return WorkspaceConfigurationListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return WorkspaceConfigurationListResult{WorkspaceConfigurations: workspaces, NextCursor: nextCursor}, nil
 }
@@ -733,7 +511,7 @@ func (s *Store) GetMemoryBucket(ctx context.Context, id uuid.UUID) (MemoryBucket
 	bucket, err := scanMemoryBucket(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return MemoryBucket{}, ErrMemoryBucketNotFound
+			return MemoryBucket{}, NotFound("memory bucket")
 		}
 		return MemoryBucket{}, err
 	}
@@ -741,42 +519,26 @@ func (s *Store) GetMemoryBucket(ctx context.Context, id uuid.UUID) (MemoryBucket
 }
 
 func (s *Store) UpdateMemoryBucket(ctx context.Context, id uuid.UUID, update MemoryBucketUpdate) (MemoryBucket, error) {
-	setClauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
-	paramIndex := 1
-
+	builder := updateBuilder{}
 	if update.Title != nil {
-		setClauses = append(setClauses, fmt.Sprintf("title = $%d", paramIndex))
-		args = append(args, *update.Title)
-		paramIndex++
+		builder.add("title", *update.Title)
 	}
 	if update.Description != nil {
-		setClauses = append(setClauses, fmt.Sprintf("description = $%d", paramIndex))
-		args = append(args, *update.Description)
-		paramIndex++
+		builder.add("description", *update.Description)
 	}
 	if update.Config != nil {
-		setClauses = append(setClauses, fmt.Sprintf("config = $%d", paramIndex))
-		args = append(args, *update.Config)
-		paramIndex++
+		builder.add("config", *update.Config)
 	}
 
-	if len(setClauses) == 0 {
+	if builder.empty() {
 		return MemoryBucket{}, fmt.Errorf("memory bucket update requires at least one field")
 	}
-	setClauses = append(setClauses, "updated_at = NOW()")
-	args = append(args, id)
-
-	query := fmt.Sprintf(
-		"UPDATE memory_buckets SET %s WHERE id = $%d RETURNING id, title, description, config, created_at, updated_at",
-		strings.Join(setClauses, ", "),
-		paramIndex,
-	)
+	query, args := builder.build("memory_buckets", "id, title, description, config, created_at, updated_at", id)
 	row := s.pool.QueryRow(ctx, query, args...)
 	bucket, err := scanMemoryBucket(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return MemoryBucket{}, ErrMemoryBucketNotFound
+			return MemoryBucket{}, NotFound("memory bucket")
 		}
 		return MemoryBucket{}, err
 	}
@@ -789,56 +551,23 @@ func (s *Store) DeleteMemoryBucket(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrMemoryBucketNotFound
+		return NotFound("memory bucket")
 	}
 	return nil
 }
 
 func (s *Store) ListMemoryBuckets(ctx context.Context, pageSize int32, cursor *PageCursor) (MemoryBucketListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, title, description, config, created_at, updated_at FROM memory_buckets`)
-
-	args := make([]any, 0, 2)
-	paramIndex := 1
-	if cursor != nil {
-		query.WriteString(fmt.Sprintf(" WHERE id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	buckets, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, title, description, config, created_at, updated_at FROM memory_buckets`,
+		nil,
+		nil,
+		cursor,
+		pageSize,
+		scanMemoryBucket,
+		func(bucket MemoryBucket) uuid.UUID { return bucket.Meta.ID },
+	)
 	if err != nil {
 		return MemoryBucketListResult{}, err
-	}
-	defer rows.Close()
-
-	buckets := make([]MemoryBucket, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(buckets)) == limit {
-			hasMore = true
-			break
-		}
-		bucket, err := scanMemoryBucket(rows)
-		if err != nil {
-			return MemoryBucketListResult{}, err
-		}
-		buckets = append(buckets, bucket)
-		lastID = bucket.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return MemoryBucketListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return MemoryBucketListResult{MemoryBuckets: buckets, NextCursor: nextCursor}, nil
 }
@@ -858,7 +587,7 @@ func (s *Store) CreateAttachment(ctx context.Context, input AttachmentInput) (At
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return Attachment{}, ErrAttachmentExists
+			return Attachment{}, AlreadyExists("attachment")
 		}
 		return Attachment{}, err
 	}
@@ -875,7 +604,7 @@ func (s *Store) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, er
 	attachment, err := scanAttachment(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Attachment{}, ErrAttachmentNotFound
+			return Attachment{}, NotFound("attachment")
 		}
 		return Attachment{}, err
 	}
@@ -888,88 +617,42 @@ func (s *Store) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if result.RowsAffected() == 0 {
-		return ErrAttachmentNotFound
+		return NotFound("attachment")
 	}
 	return nil
 }
 
 func (s *Store) ListAttachments(ctx context.Context, filter AttachmentFilter, pageSize int32, cursor *PageCursor) (AttachmentListResult, error) {
-	limit := NormalizePageSize(pageSize)
-
-	query := strings.Builder{}
-	query.WriteString(`SELECT id, kind, source_type, source_id, target_type, target_id, created_at, updated_at FROM attachments`)
-
-	args := make([]any, 0, 6)
 	clauses := make([]string, 0, 5)
-	paramIndex := 1
+	args := make([]any, 0, 5)
 
 	if filter.Kind != nil {
-		clauses = append(clauses, fmt.Sprintf("kind = $%d", paramIndex))
-		args = append(args, *filter.Kind)
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "kind = $%d", *filter.Kind)
 	}
 	if filter.SourceType != nil {
-		clauses = append(clauses, fmt.Sprintf("source_type = $%d", paramIndex))
-		args = append(args, *filter.SourceType)
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "source_type = $%d", *filter.SourceType)
 	}
 	if filter.SourceID != nil {
-		clauses = append(clauses, fmt.Sprintf("source_id = $%d", paramIndex))
-		args = append(args, *filter.SourceID)
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "source_id = $%d", *filter.SourceID)
 	}
 	if filter.TargetType != nil {
-		clauses = append(clauses, fmt.Sprintf("target_type = $%d", paramIndex))
-		args = append(args, *filter.TargetType)
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "target_type = $%d", *filter.TargetType)
 	}
 	if filter.TargetID != nil {
-		clauses = append(clauses, fmt.Sprintf("target_id = $%d", paramIndex))
-		args = append(args, *filter.TargetID)
-		paramIndex++
-	}
-	if cursor != nil {
-		clauses = append(clauses, fmt.Sprintf("id::text > $%d", paramIndex))
-		args = append(args, cursor.AfterID.String())
-		paramIndex++
+		clauses, args = appendClause(clauses, args, "target_id = $%d", *filter.TargetID)
 	}
 
-	if len(clauses) > 0 {
-		query.WriteString(" WHERE ")
-		query.WriteString(strings.Join(clauses, " AND "))
-	}
-	query.WriteString(fmt.Sprintf(" ORDER BY id::text ASC LIMIT $%d", paramIndex))
-	args = append(args, int(limit)+1)
-
-	rows, err := s.pool.Query(ctx, query.String(), args...)
+	attachments, nextCursor, err := listEntities(ctx, s.pool,
+		`SELECT id, kind, source_type, source_id, target_type, target_id, created_at, updated_at FROM attachments`,
+		clauses,
+		args,
+		cursor,
+		pageSize,
+		scanAttachment,
+		func(attachment Attachment) uuid.UUID { return attachment.Meta.ID },
+	)
 	if err != nil {
 		return AttachmentListResult{}, err
-	}
-	defer rows.Close()
-
-	attachments := make([]Attachment, 0, limit)
-	var (
-		nextCursor *PageCursor
-		lastID     uuid.UUID
-		hasMore    bool
-	)
-	for rows.Next() {
-		if int32(len(attachments)) == limit {
-			hasMore = true
-			break
-		}
-		attachment, err := scanAttachment(rows)
-		if err != nil {
-			return AttachmentListResult{}, err
-		}
-		attachments = append(attachments, attachment)
-		lastID = attachment.Meta.ID
-	}
-	if err := rows.Err(); err != nil {
-		return AttachmentListResult{}, err
-	}
-	if hasMore {
-		nextCursor = &PageCursor{AfterID: lastID}
 	}
 	return AttachmentListResult{Attachments: attachments, NextCursor: nextCursor}, nil
 }

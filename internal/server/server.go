@@ -106,13 +106,9 @@ func (s *Server) DeleteAgent(ctx context.Context, req *teamsv1.DeleteAgentReques
 }
 
 func (s *Server) ListAgents(ctx context.Context, req *teamsv1.ListAgentsRequest) (*teamsv1.ListAgentsResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	result, err := s.store.ListAgents(ctx, store.AgentFilter{Query: req.GetQuery()}, req.GetPageSize(), cursor)
@@ -120,18 +116,11 @@ func (s *Server) ListAgents(ctx context.Context, req *teamsv1.ListAgentsRequest)
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListAgentsResponse{Agents: make([]*teamsv1.Agent, len(result.Agents))}
-	for i, agent := range result.Agents {
-		protoAgent, err := toProtoAgent(agent)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode agent: %v", err)
-		}
-		resp.Agents[i] = protoAgent
+	agents, nextToken, err := mapListResult(result.Agents, result.NextCursor, toProtoAgent)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode agent: %v", err)
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
-	}
-	return resp, nil
+	return &teamsv1.ListAgentsResponse{Agents: agents, NextPageToken: nextToken}, nil
 }
 
 func (s *Server) CreateTool(ctx context.Context, req *teamsv1.CreateToolRequest) (*teamsv1.CreateToolResponse, error) {
@@ -227,13 +216,9 @@ func (s *Server) DeleteTool(ctx context.Context, req *teamsv1.DeleteToolRequest)
 }
 
 func (s *Server) ListTools(ctx context.Context, req *teamsv1.ListToolsRequest) (*teamsv1.ListToolsResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	filter := store.ToolFilter{}
@@ -250,18 +235,11 @@ func (s *Server) ListTools(ctx context.Context, req *teamsv1.ListToolsRequest) (
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListToolsResponse{Tools: make([]*teamsv1.Tool, len(result.Tools))}
-	for i, tool := range result.Tools {
-		protoTool, err := toProtoTool(tool)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode tool: %v", err)
-		}
-		resp.Tools[i] = protoTool
+	tools, nextToken, err := mapListResult(result.Tools, result.NextCursor, toProtoTool)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode tool: %v", err)
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
-	}
-	return resp, nil
+	return &teamsv1.ListToolsResponse{Tools: tools, NextPageToken: nextToken}, nil
 }
 
 func (s *Server) CreateMcpServer(ctx context.Context, req *teamsv1.CreateMcpServerRequest) (*teamsv1.CreateMcpServerResponse, error) {
@@ -349,13 +327,9 @@ func (s *Server) DeleteMcpServer(ctx context.Context, req *teamsv1.DeleteMcpServ
 }
 
 func (s *Server) ListMcpServers(ctx context.Context, req *teamsv1.ListMcpServersRequest) (*teamsv1.ListMcpServersResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	result, err := s.store.ListMcpServers(ctx, req.GetPageSize(), cursor)
@@ -363,18 +337,11 @@ func (s *Server) ListMcpServers(ctx context.Context, req *teamsv1.ListMcpServers
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListMcpServersResponse{McpServers: make([]*teamsv1.McpServer, len(result.McpServers))}
-	for i, server := range result.McpServers {
-		protoServer, err := toProtoMcpServer(server)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode mcp_server: %v", err)
-		}
-		resp.McpServers[i] = protoServer
+	servers, nextToken, err := mapListResult(result.McpServers, result.NextCursor, toProtoMcpServer)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode mcp_server: %v", err)
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
-	}
-	return resp, nil
+	return &teamsv1.ListMcpServersResponse{McpServers: servers, NextPageToken: nextToken}, nil
 }
 
 func (s *Server) CreateWorkspaceConfiguration(ctx context.Context, req *teamsv1.CreateWorkspaceConfigurationRequest) (*teamsv1.CreateWorkspaceConfigurationResponse, error) {
@@ -462,13 +429,9 @@ func (s *Server) DeleteWorkspaceConfiguration(ctx context.Context, req *teamsv1.
 }
 
 func (s *Server) ListWorkspaceConfigurations(ctx context.Context, req *teamsv1.ListWorkspaceConfigurationsRequest) (*teamsv1.ListWorkspaceConfigurationsResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	result, err := s.store.ListWorkspaceConfigurations(ctx, req.GetPageSize(), cursor)
@@ -476,18 +439,11 @@ func (s *Server) ListWorkspaceConfigurations(ctx context.Context, req *teamsv1.L
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListWorkspaceConfigurationsResponse{WorkspaceConfigurations: make([]*teamsv1.WorkspaceConfiguration, len(result.WorkspaceConfigurations))}
-	for i, workspace := range result.WorkspaceConfigurations {
-		protoWorkspace, err := toProtoWorkspaceConfiguration(workspace)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode workspace_configuration: %v", err)
-		}
-		resp.WorkspaceConfigurations[i] = protoWorkspace
+	workspaces, nextToken, err := mapListResult(result.WorkspaceConfigurations, result.NextCursor, toProtoWorkspaceConfiguration)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode workspace_configuration: %v", err)
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
-	}
-	return resp, nil
+	return &teamsv1.ListWorkspaceConfigurationsResponse{WorkspaceConfigurations: workspaces, NextPageToken: nextToken}, nil
 }
 
 func (s *Server) CreateMemoryBucket(ctx context.Context, req *teamsv1.CreateMemoryBucketRequest) (*teamsv1.CreateMemoryBucketResponse, error) {
@@ -575,13 +531,9 @@ func (s *Server) DeleteMemoryBucket(ctx context.Context, req *teamsv1.DeleteMemo
 }
 
 func (s *Server) ListMemoryBuckets(ctx context.Context, req *teamsv1.ListMemoryBucketsRequest) (*teamsv1.ListMemoryBucketsResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	result, err := s.store.ListMemoryBuckets(ctx, req.GetPageSize(), cursor)
@@ -589,18 +541,11 @@ func (s *Server) ListMemoryBuckets(ctx context.Context, req *teamsv1.ListMemoryB
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListMemoryBucketsResponse{MemoryBuckets: make([]*teamsv1.MemoryBucket, len(result.MemoryBuckets))}
-	for i, bucket := range result.MemoryBuckets {
-		protoBucket, err := toProtoMemoryBucket(bucket)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode memory_bucket: %v", err)
-		}
-		resp.MemoryBuckets[i] = protoBucket
+	buckets, nextToken, err := mapListResult(result.MemoryBuckets, result.NextCursor, toProtoMemoryBucket)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode memory_bucket: %v", err)
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
-	}
-	return resp, nil
+	return &teamsv1.ListMemoryBucketsResponse{MemoryBuckets: buckets, NextPageToken: nextToken}, nil
 }
 
 func (s *Server) CreateAttachment(ctx context.Context, req *teamsv1.CreateAttachmentRequest) (*teamsv1.CreateAttachmentResponse, error) {
@@ -677,13 +622,9 @@ func (s *Server) DeleteAttachment(ctx context.Context, req *teamsv1.DeleteAttach
 }
 
 func (s *Server) ListAttachments(ctx context.Context, req *teamsv1.ListAttachmentsRequest) (*teamsv1.ListAttachmentsResponse, error) {
-	var cursor *store.PageCursor
-	if token := req.GetPageToken(); token != "" {
-		id, err := store.DecodePageToken(token)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
-		}
-		cursor = &store.PageCursor{AfterID: id}
+	cursor, err := decodePageCursor(req.GetPageToken())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
 
 	filter := store.AttachmentFilter{}
@@ -728,18 +669,37 @@ func (s *Server) ListAttachments(ctx context.Context, req *teamsv1.ListAttachmen
 		return nil, toStatusError(err)
 	}
 
-	resp := &teamsv1.ListAttachmentsResponse{Attachments: make([]*teamsv1.Attachment, len(result.Attachments))}
-	for i, attachment := range result.Attachments {
-		protoAttachment, err := toProtoAttachment(attachment)
+	attachments, nextToken, err := mapListResult(result.Attachments, result.NextCursor, toProtoAttachment)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "decode attachment: %v", err)
+	}
+	return &teamsv1.ListAttachmentsResponse{Attachments: attachments, NextPageToken: nextToken}, nil
+}
+
+func decodePageCursor(token string) (*store.PageCursor, error) {
+	if token == "" {
+		return nil, nil
+	}
+	id, err := store.DecodePageToken(token)
+	if err != nil {
+		return nil, err
+	}
+	return &store.PageCursor{AfterID: id}, nil
+}
+
+func mapListResult[T any, P any](items []T, nextCursor *store.PageCursor, convert func(T) (P, error)) ([]P, string, error) {
+	results := make([]P, len(items))
+	for i, item := range items {
+		converted, err := convert(item)
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "decode attachment: %v", err)
+			return nil, "", err
 		}
-		resp.Attachments[i] = protoAttachment
+		results[i] = converted
 	}
-	if result.NextCursor != nil {
-		resp.NextPageToken = store.EncodePageToken(result.NextCursor.AfterID)
+	if nextCursor == nil {
+		return results, "", nil
 	}
-	return resp, nil
+	return results, store.EncodePageToken(nextCursor.AfterID), nil
 }
 
 func parseUUID(value string) (uuid.UUID, error) {
@@ -754,17 +714,13 @@ func parseUUID(value string) (uuid.UUID, error) {
 }
 
 func toStatusError(err error) error {
-	switch {
-	case errors.Is(err, store.ErrAgentNotFound),
-		errors.Is(err, store.ErrToolNotFound),
-		errors.Is(err, store.ErrMcpServerNotFound),
-		errors.Is(err, store.ErrWorkspaceConfigurationNotFound),
-		errors.Is(err, store.ErrMemoryBucketNotFound),
-		errors.Is(err, store.ErrAttachmentNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, store.ErrAttachmentExists):
-		return status.Error(codes.AlreadyExists, err.Error())
-	default:
-		return status.Errorf(codes.Internal, "internal error: %v", err)
+	var notFound *store.NotFoundError
+	if errors.As(err, &notFound) {
+		return status.Error(codes.NotFound, notFound.Error())
 	}
+	var exists *store.AlreadyExistsError
+	if errors.As(err, &exists) {
+		return status.Error(codes.AlreadyExists, exists.Error())
+	}
+	return status.Errorf(codes.Internal, "internal error: %v", err)
 }

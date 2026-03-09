@@ -113,7 +113,7 @@ func attachmentRelation(kind teamsv1.AttachmentKind) (teamsv1.EntityType, teamsv
 	case teamsv1.AttachmentKind_ATTACHMENT_KIND_MCP_SERVER_WORKSPACE_CONFIGURATION:
 		return teamsv1.EntityType_ENTITY_TYPE_MCP_SERVER, teamsv1.EntityType_ENTITY_TYPE_WORKSPACE_CONFIGURATION, nil
 	default:
-		return teamsv1.EntityType_ENTITY_TYPE_UNSPECIFIED, teamsv1.EntityType_ENTITY_TYPE_UNSPECIFIED, fmt.Errorf("attachment kind must be specified")
+		panic(fmt.Sprintf("unhandled attachment kind: %d", kind))
 	}
 }
 

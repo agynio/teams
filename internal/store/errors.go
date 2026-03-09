@@ -1,13 +1,27 @@
 package store
 
-import "errors"
+import "fmt"
 
-var (
-	ErrAgentNotFound                  = errors.New("agent not found")
-	ErrToolNotFound                   = errors.New("tool not found")
-	ErrMcpServerNotFound              = errors.New("mcp server not found")
-	ErrWorkspaceConfigurationNotFound = errors.New("workspace configuration not found")
-	ErrMemoryBucketNotFound           = errors.New("memory bucket not found")
-	ErrAttachmentNotFound             = errors.New("attachment not found")
-	ErrAttachmentExists               = errors.New("attachment already exists")
-)
+type NotFoundError struct {
+	Resource string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("%s not found", e.Resource)
+}
+
+type AlreadyExistsError struct {
+	Resource string
+}
+
+func (e *AlreadyExistsError) Error() string {
+	return fmt.Sprintf("%s already exists", e.Resource)
+}
+
+func NotFound(resource string) error {
+	return &NotFoundError{Resource: resource}
+}
+
+func AlreadyExists(resource string) error {
+	return &AlreadyExistsError{Resource: resource}
+}

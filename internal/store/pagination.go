@@ -9,16 +9,16 @@ import (
 )
 
 const (
-	defaultPageSize int32 = 50
-	maxPageSize     int32 = 100
+	DefaultListPageSize int32 = 50
+	MaxListPageSize     int32 = 100
 )
 
 func NormalizePageSize(size int32) int32 {
 	if size <= 0 {
-		return defaultPageSize
+		return DefaultListPageSize
 	}
-	if size > maxPageSize {
-		return maxPageSize
+	if size > MaxListPageSize {
+		return MaxListPageSize
 	}
 	return size
 }

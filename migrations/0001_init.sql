@@ -57,3 +57,6 @@ CREATE TABLE attachments (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(kind, source_id, target_id)
 );
+
+CREATE INDEX idx_attachments_source ON attachments (source_type, source_id);
+CREATE INDEX idx_attachments_target ON attachments (target_type, target_id);
