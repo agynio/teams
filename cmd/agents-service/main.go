@@ -10,14 +10,14 @@ import (
 	"os/signal"
 	"syscall"
 
-	agentsv1 "github.com/agynio/teams/.gen/go/agynio/api/agents/v1"
+	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
-	"github.com/agynio/teams/internal/config"
-	"github.com/agynio/teams/internal/db"
-	"github.com/agynio/teams/internal/server"
-	"github.com/agynio/teams/internal/store"
+	"github.com/agynio/agents/internal/config"
+	"github.com/agynio/agents/internal/db"
+	"github.com/agynio/agents/internal/server"
+	"github.com/agynio/agents/internal/store"
 )
 
 func main() {

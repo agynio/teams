@@ -5,7 +5,7 @@ managed:
   enabled: true
   override:
     - file_option: go_package_prefix
-      value: github.com/agynio/teams/.gen/go
+      value: github.com/agynio/agents/.gen/go
 
 plugins:
   - remote: buf.build/protocolbuffers/go
