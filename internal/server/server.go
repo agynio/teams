@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	agentsv1 "github.com/agynio/teams/.gen/go/agynio/api/agents/v1"
-	"github.com/agynio/teams/internal/store"
+	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
+	"github.com/agynio/agents/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

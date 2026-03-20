@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	agentsv1 "github.com/agynio/teams/.gen/go/agynio/api/agents/v1"
+	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"

@@ -1,4 +1,4 @@
-module github.com/agynio/teams
+module github.com/agynio/agents
 
 go 1.25.7
 

@@ -1,8 +1,8 @@
 package server
 
 import (
-	agentsv1 "github.com/agynio/teams/.gen/go/agynio/api/agents/v1"
-	"github.com/agynio/teams/internal/store"
+	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
+	"github.com/agynio/agents/internal/store"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
