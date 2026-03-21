@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	agentColumns            = `id, name, role, model, description, configuration, image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, created_at, updated_at`
-	volumeColumns           = `id, persistent, mount_path, size, description, created_at, updated_at`
-	volumeAttachmentColumns = `id, volume_id, agent_id, mcp_id, hook_id, created_at, updated_at`
-	mcpColumns              = `id, agent_id, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description, created_at, updated_at`
-	skillColumns            = `id, agent_id, name, body, description, created_at, updated_at`
-	hookColumns             = `id, agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description, created_at, updated_at`
-	envColumns              = `id, name, description, agent_id, mcp_id, hook_id, value, secret_id, created_at, updated_at`
-	initScriptColumns       = `id, script, description, agent_id, mcp_id, hook_id, created_at, updated_at`
+	agentColumns            = `id, tenant_id, name, role, model, description, configuration, image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, created_at, updated_at`
+	volumeColumns           = `id, tenant_id, persistent, mount_path, size, description, created_at, updated_at`
+	volumeAttachmentColumns = `id, tenant_id, volume_id, agent_id, mcp_id, hook_id, created_at, updated_at`
+	mcpColumns              = `id, tenant_id, agent_id, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description, created_at, updated_at`
+	skillColumns            = `id, tenant_id, agent_id, name, body, description, created_at, updated_at`
+	hookColumns             = `id, tenant_id, agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description, created_at, updated_at`
+	envColumns              = `id, tenant_id, name, description, agent_id, mcp_id, hook_id, value, secret_id, created_at, updated_at`
+	initScriptColumns       = `id, tenant_id, script, description, agent_id, mcp_id, hook_id, created_at, updated_at`
 )
 
 type Store struct {
@@ -51,6 +51,7 @@ func scanAgent(row pgx.Row) (Agent, error) {
 	var agent Agent
 	if err := row.Scan(
 		&agent.Meta.ID,
+		&agent.Meta.TenantID,
 		&agent.Name,
 		&agent.Role,
 		&agent.Model,
@@ -73,6 +74,7 @@ func scanVolume(row pgx.Row) (Volume, error) {
 	var volume Volume
 	if err := row.Scan(
 		&volume.Meta.ID,
+		&volume.Meta.TenantID,
 		&volume.Persistent,
 		&volume.MountPath,
 		&volume.Size,
@@ -92,6 +94,7 @@ func scanVolumeAttachment(row pgx.Row) (VolumeAttachment, error) {
 	var hookID pgtype.UUID
 	if err := row.Scan(
 		&attachment.Meta.ID,
+		&attachment.Meta.TenantID,
 		&attachment.VolumeID,
 		&agentID,
 		&mcpID,
@@ -111,6 +114,7 @@ func scanMcp(row pgx.Row) (Mcp, error) {
 	var mcp Mcp
 	if err := row.Scan(
 		&mcp.Meta.ID,
+		&mcp.Meta.TenantID,
 		&mcp.AgentID,
 		&mcp.Image,
 		&mcp.Command,
@@ -131,6 +135,7 @@ func scanSkill(row pgx.Row) (Skill, error) {
 	var skill Skill
 	if err := row.Scan(
 		&skill.Meta.ID,
+		&skill.Meta.TenantID,
 		&skill.AgentID,
 		&skill.Name,
 		&skill.Body,
@@ -147,6 +152,7 @@ func scanHook(row pgx.Row) (Hook, error) {
 	var hook Hook
 	if err := row.Scan(
 		&hook.Meta.ID,
+		&hook.Meta.TenantID,
 		&hook.AgentID,
 		&hook.Event,
 		&hook.Function,
@@ -173,6 +179,7 @@ func scanEnv(row pgx.Row) (Env, error) {
 	var secretID pgtype.UUID
 	if err := row.Scan(
 		&env.Meta.ID,
+		&env.Meta.TenantID,
 		&env.Name,
 		&env.Description,
 		&agentID,
@@ -200,6 +207,7 @@ func scanInitScript(row pgx.Row) (InitScript, error) {
 	var hookID pgtype.UUID
 	if err := row.Scan(
 		&script.Meta.ID,
+		&script.Meta.TenantID,
 		&script.Script,
 		&script.Description,
 		&agentID,
@@ -216,11 +224,12 @@ func scanInitScript(row pgx.Row) (InitScript, error) {
 	return script, nil
 }
 
-func (s *Store) CreateAgent(ctx context.Context, input AgentInput) (Agent, error) {
+func (s *Store) CreateAgent(ctx context.Context, tenantID uuid.UUID, input AgentInput) (Agent, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO agents (name, role, model, description, configuration, image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING %s`, agentColumns),
+		fmt.Sprintf(`INSERT INTO agents (tenant_id, name, role, model, description, configuration, image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 RETURNING %s`, agentColumns),
+		tenantID,
 		input.Name,
 		input.Role,
 		input.Model,
@@ -239,10 +248,11 @@ func (s *Store) CreateAgent(ctx context.Context, input AgentInput) (Agent, error
 	return agent, nil
 }
 
-func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
+func (s *Store) GetAgent(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Agent, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM agents WHERE id = $1`, agentColumns),
+		fmt.Sprintf(`SELECT %s FROM agents WHERE id = $1 AND tenant_id = $2`, agentColumns),
 		id,
+		tenantID,
 	)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -254,7 +264,7 @@ func (s *Store) GetAgent(ctx context.Context, id uuid.UUID) (Agent, error) {
 	return agent, nil
 }
 
-func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdate) (Agent, error) {
+func (s *Store) UpdateAgent(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update AgentUpdate) (Agent, error) {
 	builder := updateBuilder{}
 	if update.Name != nil {
 		builder.add("name", *update.Name)
@@ -284,7 +294,7 @@ func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdat
 	if builder.empty() {
 		return Agent{}, fmt.Errorf("agent update requires at least one field")
 	}
-	query, args := builder.build("agents", agentColumns, id)
+	query, args := builder.build("agents", agentColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	agent, err := scanAgent(row)
 	if err != nil {
@@ -296,8 +306,8 @@ func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdat
 	return agent, nil
 }
 
-func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, id)
+func (s *Store) DeleteAgent(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -311,11 +321,13 @@ func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListAgents(ctx context.Context, _ AgentFilter, pageSize int32, cursor *PageCursor) (AgentListResult, error) {
+func (s *Store) ListAgents(ctx context.Context, tenantID uuid.UUID, _ AgentFilter, pageSize int32, cursor *PageCursor) (AgentListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	agents, nextCursor, err := listEntities(ctx, s.pool,
 		fmt.Sprintf("SELECT %s FROM agents", agentColumns),
-		nil,
-		nil,
+		clauses,
+		args,
 		cursor,
 		pageSize,
 		scanAgent,
@@ -327,11 +339,12 @@ func (s *Store) ListAgents(ctx context.Context, _ AgentFilter, pageSize int32, c
 	return AgentListResult{Agents: agents, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateVolume(ctx context.Context, input VolumeInput) (Volume, error) {
+func (s *Store) CreateVolume(ctx context.Context, tenantID uuid.UUID, input VolumeInput) (Volume, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO volumes (persistent, mount_path, size, description)
-         VALUES ($1, $2, $3, $4)
-         RETURNING %s`, volumeColumns),
+		fmt.Sprintf(`INSERT INTO volumes (tenant_id, persistent, mount_path, size, description)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING %s`, volumeColumns),
+		tenantID,
 		input.Persistent,
 		input.MountPath,
 		input.Size,
@@ -344,10 +357,11 @@ func (s *Store) CreateVolume(ctx context.Context, input VolumeInput) (Volume, er
 	return volume, nil
 }
 
-func (s *Store) GetVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
+func (s *Store) GetVolume(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Volume, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM volumes WHERE id = $1`, volumeColumns),
+		fmt.Sprintf(`SELECT %s FROM volumes WHERE id = $1 AND tenant_id = $2`, volumeColumns),
 		id,
+		tenantID,
 	)
 	volume, err := scanVolume(row)
 	if err != nil {
@@ -359,7 +373,7 @@ func (s *Store) GetVolume(ctx context.Context, id uuid.UUID) (Volume, error) {
 	return volume, nil
 }
 
-func (s *Store) UpdateVolume(ctx context.Context, id uuid.UUID, update VolumeUpdate) (Volume, error) {
+func (s *Store) UpdateVolume(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update VolumeUpdate) (Volume, error) {
 	builder := updateBuilder{}
 	if update.Persistent != nil {
 		builder.add("persistent", *update.Persistent)
@@ -377,7 +391,7 @@ func (s *Store) UpdateVolume(ctx context.Context, id uuid.UUID, update VolumeUpd
 	if builder.empty() {
 		return Volume{}, fmt.Errorf("volume update requires at least one field")
 	}
-	query, args := builder.build("volumes", volumeColumns, id)
+	query, args := builder.build("volumes", volumeColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	volume, err := scanVolume(row)
 	if err != nil {
@@ -389,8 +403,8 @@ func (s *Store) UpdateVolume(ctx context.Context, id uuid.UUID, update VolumeUpd
 	return volume, nil
 }
 
-func (s *Store) DeleteVolume(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM volumes WHERE id = $1`, id)
+func (s *Store) DeleteVolume(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM volumes WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -404,11 +418,13 @@ func (s *Store) DeleteVolume(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListVolumes(ctx context.Context, _ VolumeFilter, pageSize int32, cursor *PageCursor) (VolumeListResult, error) {
+func (s *Store) ListVolumes(ctx context.Context, tenantID uuid.UUID, _ VolumeFilter, pageSize int32, cursor *PageCursor) (VolumeListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	volumes, nextCursor, err := listEntities(ctx, s.pool,
 		fmt.Sprintf("SELECT %s FROM volumes", volumeColumns),
-		nil,
-		nil,
+		clauses,
+		args,
 		cursor,
 		pageSize,
 		scanVolume,
@@ -420,11 +436,12 @@ func (s *Store) ListVolumes(ctx context.Context, _ VolumeFilter, pageSize int32,
 	return VolumeListResult{Volumes: volumes, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateVolumeAttachment(ctx context.Context, input VolumeAttachmentInput) (VolumeAttachment, error) {
+func (s *Store) CreateVolumeAttachment(ctx context.Context, tenantID uuid.UUID, input VolumeAttachmentInput) (VolumeAttachment, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO volume_attachments (volume_id, agent_id, mcp_id, hook_id)
-         VALUES ($1, $2, $3, $4)
-         RETURNING %s`, volumeAttachmentColumns),
+		fmt.Sprintf(`INSERT INTO volume_attachments (tenant_id, volume_id, agent_id, mcp_id, hook_id)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING %s`, volumeAttachmentColumns),
+		tenantID,
 		input.VolumeID,
 		input.AgentID,
 		input.McpID,
@@ -446,10 +463,11 @@ func (s *Store) CreateVolumeAttachment(ctx context.Context, input VolumeAttachme
 	return attachment, nil
 }
 
-func (s *Store) GetVolumeAttachment(ctx context.Context, id uuid.UUID) (VolumeAttachment, error) {
+func (s *Store) GetVolumeAttachment(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (VolumeAttachment, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM volume_attachments WHERE id = $1`, volumeAttachmentColumns),
+		fmt.Sprintf(`SELECT %s FROM volume_attachments WHERE id = $1 AND tenant_id = $2`, volumeAttachmentColumns),
 		id,
+		tenantID,
 	)
 	attachment, err := scanVolumeAttachment(row)
 	if err != nil {
@@ -461,8 +479,8 @@ func (s *Store) GetVolumeAttachment(ctx context.Context, id uuid.UUID) (VolumeAt
 	return attachment, nil
 }
 
-func (s *Store) DeleteVolumeAttachment(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM volume_attachments WHERE id = $1`, id)
+func (s *Store) DeleteVolumeAttachment(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM volume_attachments WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -472,9 +490,9 @@ func (s *Store) DeleteVolumeAttachment(ctx context.Context, id uuid.UUID) error 
 	return nil
 }
 
-func (s *Store) ListVolumeAttachments(ctx context.Context, filter VolumeAttachmentFilter, pageSize int32, cursor *PageCursor) (VolumeAttachmentListResult, error) {
-	clauses := make([]string, 0, 4)
-	args := make([]any, 0, 4)
+func (s *Store) ListVolumeAttachments(ctx context.Context, tenantID uuid.UUID, filter VolumeAttachmentFilter, pageSize int32, cursor *PageCursor) (VolumeAttachmentListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.VolumeID != nil {
 		clauses, args = appendClause(clauses, args, "volume_id = $%d", *filter.VolumeID)
 	}
@@ -503,11 +521,12 @@ func (s *Store) ListVolumeAttachments(ctx context.Context, filter VolumeAttachme
 	return VolumeAttachmentListResult{VolumeAttachments: attachments, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateMcp(ctx context.Context, input McpInput) (Mcp, error) {
+func (s *Store) CreateMcp(ctx context.Context, tenantID uuid.UUID, input McpInput) (Mcp, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO mcps (agent_id, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING %s`, mcpColumns),
+		fmt.Sprintf(`INSERT INTO mcps (tenant_id, agent_id, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING %s`, mcpColumns),
+		tenantID,
 		input.AgentID,
 		input.Image,
 		input.Command,
@@ -528,10 +547,11 @@ func (s *Store) CreateMcp(ctx context.Context, input McpInput) (Mcp, error) {
 	return mcp, nil
 }
 
-func (s *Store) GetMcp(ctx context.Context, id uuid.UUID) (Mcp, error) {
+func (s *Store) GetMcp(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Mcp, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM mcps WHERE id = $1`, mcpColumns),
+		fmt.Sprintf(`SELECT %s FROM mcps WHERE id = $1 AND tenant_id = $2`, mcpColumns),
 		id,
+		tenantID,
 	)
 	mcp, err := scanMcp(row)
 	if err != nil {
@@ -543,7 +563,7 @@ func (s *Store) GetMcp(ctx context.Context, id uuid.UUID) (Mcp, error) {
 	return mcp, nil
 }
 
-func (s *Store) UpdateMcp(ctx context.Context, id uuid.UUID, update McpUpdate) (Mcp, error) {
+func (s *Store) UpdateMcp(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update McpUpdate) (Mcp, error) {
 	builder := updateBuilder{}
 	if update.Image != nil {
 		builder.add("image", *update.Image)
@@ -564,7 +584,7 @@ func (s *Store) UpdateMcp(ctx context.Context, id uuid.UUID, update McpUpdate) (
 	if builder.empty() {
 		return Mcp{}, fmt.Errorf("mcp update requires at least one field")
 	}
-	query, args := builder.build("mcps", mcpColumns, id)
+	query, args := builder.build("mcps", mcpColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	mcp, err := scanMcp(row)
 	if err != nil {
@@ -576,8 +596,8 @@ func (s *Store) UpdateMcp(ctx context.Context, id uuid.UUID, update McpUpdate) (
 	return mcp, nil
 }
 
-func (s *Store) DeleteMcp(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM mcps WHERE id = $1`, id)
+func (s *Store) DeleteMcp(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM mcps WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -591,9 +611,9 @@ func (s *Store) DeleteMcp(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListMcps(ctx context.Context, filter McpFilter, pageSize int32, cursor *PageCursor) (McpListResult, error) {
-	clauses := make([]string, 0, 1)
-	args := make([]any, 0, 1)
+func (s *Store) ListMcps(ctx context.Context, tenantID uuid.UUID, filter McpFilter, pageSize int32, cursor *PageCursor) (McpListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.AgentID != nil {
 		clauses, args = appendClause(clauses, args, "agent_id = $%d", *filter.AgentID)
 	}
@@ -613,11 +633,12 @@ func (s *Store) ListMcps(ctx context.Context, filter McpFilter, pageSize int32, 
 	return McpListResult{Mcps: mcps, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateSkill(ctx context.Context, input SkillInput) (Skill, error) {
+func (s *Store) CreateSkill(ctx context.Context, tenantID uuid.UUID, input SkillInput) (Skill, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO skills (agent_id, name, body, description)
-         VALUES ($1, $2, $3, $4)
-         RETURNING %s`, skillColumns),
+		fmt.Sprintf(`INSERT INTO skills (tenant_id, agent_id, name, body, description)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING %s`, skillColumns),
+		tenantID,
 		input.AgentID,
 		input.Name,
 		input.Body,
@@ -634,10 +655,11 @@ func (s *Store) CreateSkill(ctx context.Context, input SkillInput) (Skill, error
 	return skill, nil
 }
 
-func (s *Store) GetSkill(ctx context.Context, id uuid.UUID) (Skill, error) {
+func (s *Store) GetSkill(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Skill, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM skills WHERE id = $1`, skillColumns),
+		fmt.Sprintf(`SELECT %s FROM skills WHERE id = $1 AND tenant_id = $2`, skillColumns),
 		id,
+		tenantID,
 	)
 	skill, err := scanSkill(row)
 	if err != nil {
@@ -649,7 +671,7 @@ func (s *Store) GetSkill(ctx context.Context, id uuid.UUID) (Skill, error) {
 	return skill, nil
 }
 
-func (s *Store) UpdateSkill(ctx context.Context, id uuid.UUID, update SkillUpdate) (Skill, error) {
+func (s *Store) UpdateSkill(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update SkillUpdate) (Skill, error) {
 	builder := updateBuilder{}
 	if update.Name != nil {
 		builder.add("name", *update.Name)
@@ -664,7 +686,7 @@ func (s *Store) UpdateSkill(ctx context.Context, id uuid.UUID, update SkillUpdat
 	if builder.empty() {
 		return Skill{}, fmt.Errorf("skill update requires at least one field")
 	}
-	query, args := builder.build("skills", skillColumns, id)
+	query, args := builder.build("skills", skillColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	skill, err := scanSkill(row)
 	if err != nil {
@@ -676,8 +698,8 @@ func (s *Store) UpdateSkill(ctx context.Context, id uuid.UUID, update SkillUpdat
 	return skill, nil
 }
 
-func (s *Store) DeleteSkill(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM skills WHERE id = $1`, id)
+func (s *Store) DeleteSkill(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM skills WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -687,9 +709,9 @@ func (s *Store) DeleteSkill(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListSkills(ctx context.Context, filter SkillFilter, pageSize int32, cursor *PageCursor) (SkillListResult, error) {
-	clauses := make([]string, 0, 1)
-	args := make([]any, 0, 1)
+func (s *Store) ListSkills(ctx context.Context, tenantID uuid.UUID, filter SkillFilter, pageSize int32, cursor *PageCursor) (SkillListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.AgentID != nil {
 		clauses, args = appendClause(clauses, args, "agent_id = $%d", *filter.AgentID)
 	}
@@ -709,11 +731,12 @@ func (s *Store) ListSkills(ctx context.Context, filter SkillFilter, pageSize int
 	return SkillListResult{Skills: skills, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateHook(ctx context.Context, input HookInput) (Hook, error) {
+func (s *Store) CreateHook(ctx context.Context, tenantID uuid.UUID, input HookInput) (Hook, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO hooks (agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING %s`, hookColumns),
+		fmt.Sprintf(`INSERT INTO hooks (tenant_id, agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 RETURNING %s`, hookColumns),
+		tenantID,
 		input.AgentID,
 		input.Event,
 		input.Function,
@@ -735,10 +758,11 @@ func (s *Store) CreateHook(ctx context.Context, input HookInput) (Hook, error) {
 	return hook, nil
 }
 
-func (s *Store) GetHook(ctx context.Context, id uuid.UUID) (Hook, error) {
+func (s *Store) GetHook(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Hook, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM hooks WHERE id = $1`, hookColumns),
+		fmt.Sprintf(`SELECT %s FROM hooks WHERE id = $1 AND tenant_id = $2`, hookColumns),
 		id,
+		tenantID,
 	)
 	hook, err := scanHook(row)
 	if err != nil {
@@ -750,7 +774,7 @@ func (s *Store) GetHook(ctx context.Context, id uuid.UUID) (Hook, error) {
 	return hook, nil
 }
 
-func (s *Store) UpdateHook(ctx context.Context, id uuid.UUID, update HookUpdate) (Hook, error) {
+func (s *Store) UpdateHook(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update HookUpdate) (Hook, error) {
 	builder := updateBuilder{}
 	if update.Event != nil {
 		builder.add("event", *update.Event)
@@ -774,7 +798,7 @@ func (s *Store) UpdateHook(ctx context.Context, id uuid.UUID, update HookUpdate)
 	if builder.empty() {
 		return Hook{}, fmt.Errorf("hook update requires at least one field")
 	}
-	query, args := builder.build("hooks", hookColumns, id)
+	query, args := builder.build("hooks", hookColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	hook, err := scanHook(row)
 	if err != nil {
@@ -786,8 +810,8 @@ func (s *Store) UpdateHook(ctx context.Context, id uuid.UUID, update HookUpdate)
 	return hook, nil
 }
 
-func (s *Store) DeleteHook(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM hooks WHERE id = $1`, id)
+func (s *Store) DeleteHook(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM hooks WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
@@ -801,9 +825,9 @@ func (s *Store) DeleteHook(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListHooks(ctx context.Context, filter HookFilter, pageSize int32, cursor *PageCursor) (HookListResult, error) {
-	clauses := make([]string, 0, 1)
-	args := make([]any, 0, 1)
+func (s *Store) ListHooks(ctx context.Context, tenantID uuid.UUID, filter HookFilter, pageSize int32, cursor *PageCursor) (HookListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.AgentID != nil {
 		clauses, args = appendClause(clauses, args, "agent_id = $%d", *filter.AgentID)
 	}
@@ -823,11 +847,12 @@ func (s *Store) ListHooks(ctx context.Context, filter HookFilter, pageSize int32
 	return HookListResult{Hooks: hooks, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateEnv(ctx context.Context, input EnvInput) (Env, error) {
+func (s *Store) CreateEnv(ctx context.Context, tenantID uuid.UUID, input EnvInput) (Env, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO envs (name, description, agent_id, mcp_id, hook_id, value, secret_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING %s`, envColumns),
+		fmt.Sprintf(`INSERT INTO envs (tenant_id, name, description, agent_id, mcp_id, hook_id, value, secret_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING %s`, envColumns),
+		tenantID,
 		input.Name,
 		input.Description,
 		input.AgentID,
@@ -847,10 +872,11 @@ func (s *Store) CreateEnv(ctx context.Context, input EnvInput) (Env, error) {
 	return env, nil
 }
 
-func (s *Store) GetEnv(ctx context.Context, id uuid.UUID) (Env, error) {
+func (s *Store) GetEnv(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (Env, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM envs WHERE id = $1`, envColumns),
+		fmt.Sprintf(`SELECT %s FROM envs WHERE id = $1 AND tenant_id = $2`, envColumns),
 		id,
+		tenantID,
 	)
 	env, err := scanEnv(row)
 	if err != nil {
@@ -862,7 +888,7 @@ func (s *Store) GetEnv(ctx context.Context, id uuid.UUID) (Env, error) {
 	return env, nil
 }
 
-func (s *Store) UpdateEnv(ctx context.Context, id uuid.UUID, update EnvUpdate) (Env, error) {
+func (s *Store) UpdateEnv(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update EnvUpdate) (Env, error) {
 	builder := updateBuilder{}
 	if update.Name != nil {
 		builder.add("name", *update.Name)
@@ -882,7 +908,7 @@ func (s *Store) UpdateEnv(ctx context.Context, id uuid.UUID, update EnvUpdate) (
 	if builder.empty() {
 		return Env{}, fmt.Errorf("env update requires at least one field")
 	}
-	query, args := builder.build("envs", envColumns, id)
+	query, args := builder.build("envs", envColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	env, err := scanEnv(row)
 	if err != nil {
@@ -894,8 +920,8 @@ func (s *Store) UpdateEnv(ctx context.Context, id uuid.UUID, update EnvUpdate) (
 	return env, nil
 }
 
-func (s *Store) DeleteEnv(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM envs WHERE id = $1`, id)
+func (s *Store) DeleteEnv(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM envs WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -905,9 +931,9 @@ func (s *Store) DeleteEnv(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListEnvs(ctx context.Context, filter EnvFilter, pageSize int32, cursor *PageCursor) (EnvListResult, error) {
-	clauses := make([]string, 0, 3)
-	args := make([]any, 0, 3)
+func (s *Store) ListEnvs(ctx context.Context, tenantID uuid.UUID, filter EnvFilter, pageSize int32, cursor *PageCursor) (EnvListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.AgentID != nil {
 		clauses, args = appendClause(clauses, args, "agent_id = $%d", *filter.AgentID)
 	}
@@ -933,11 +959,12 @@ func (s *Store) ListEnvs(ctx context.Context, filter EnvFilter, pageSize int32, 
 	return EnvListResult{Envs: envs, NextCursor: nextCursor}, nil
 }
 
-func (s *Store) CreateInitScript(ctx context.Context, input InitScriptInput) (InitScript, error) {
+func (s *Store) CreateInitScript(ctx context.Context, tenantID uuid.UUID, input InitScriptInput) (InitScript, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO init_scripts (script, description, agent_id, mcp_id, hook_id)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING %s`, initScriptColumns),
+		fmt.Sprintf(`INSERT INTO init_scripts (tenant_id, script, description, agent_id, mcp_id, hook_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING %s`, initScriptColumns),
+		tenantID,
 		input.Script,
 		input.Description,
 		input.AgentID,
@@ -955,10 +982,11 @@ func (s *Store) CreateInitScript(ctx context.Context, input InitScriptInput) (In
 	return script, nil
 }
 
-func (s *Store) GetInitScript(ctx context.Context, id uuid.UUID) (InitScript, error) {
+func (s *Store) GetInitScript(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) (InitScript, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`SELECT %s FROM init_scripts WHERE id = $1`, initScriptColumns),
+		fmt.Sprintf(`SELECT %s FROM init_scripts WHERE id = $1 AND tenant_id = $2`, initScriptColumns),
 		id,
+		tenantID,
 	)
 	script, err := scanInitScript(row)
 	if err != nil {
@@ -970,7 +998,7 @@ func (s *Store) GetInitScript(ctx context.Context, id uuid.UUID) (InitScript, er
 	return script, nil
 }
 
-func (s *Store) UpdateInitScript(ctx context.Context, id uuid.UUID, update InitScriptUpdate) (InitScript, error) {
+func (s *Store) UpdateInitScript(ctx context.Context, tenantID uuid.UUID, id uuid.UUID, update InitScriptUpdate) (InitScript, error) {
 	builder := updateBuilder{}
 	if update.Script != nil {
 		builder.add("script", *update.Script)
@@ -982,7 +1010,7 @@ func (s *Store) UpdateInitScript(ctx context.Context, id uuid.UUID, update InitS
 	if builder.empty() {
 		return InitScript{}, fmt.Errorf("init script update requires at least one field")
 	}
-	query, args := builder.build("init_scripts", initScriptColumns, id)
+	query, args := builder.build("init_scripts", initScriptColumns, id, tenantID)
 	row := s.pool.QueryRow(ctx, query, args...)
 	script, err := scanInitScript(row)
 	if err != nil {
@@ -994,8 +1022,8 @@ func (s *Store) UpdateInitScript(ctx context.Context, id uuid.UUID, update InitS
 	return script, nil
 }
 
-func (s *Store) DeleteInitScript(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM init_scripts WHERE id = $1`, id)
+func (s *Store) DeleteInitScript(ctx context.Context, tenantID uuid.UUID, id uuid.UUID) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM init_scripts WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	if err != nil {
 		return err
 	}
@@ -1005,9 +1033,9 @@ func (s *Store) DeleteInitScript(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListInitScripts(ctx context.Context, filter InitScriptFilter, pageSize int32, cursor *PageCursor) (InitScriptListResult, error) {
-	clauses := make([]string, 0, 3)
-	args := make([]any, 0, 3)
+func (s *Store) ListInitScripts(ctx context.Context, tenantID uuid.UUID, filter InitScriptFilter, pageSize int32, cursor *PageCursor) (InitScriptListResult, error) {
+	clauses := []string{"tenant_id = $1"}
+	args := []any{tenantID}
 	if filter.AgentID != nil {
 		clauses, args = appendClause(clauses, args, "agent_id = $%d", *filter.AgentID)
 	}

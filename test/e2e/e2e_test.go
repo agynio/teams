@@ -23,6 +23,7 @@ const listPageSize int32 = 50
 func TestAgentsServiceE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	ctx = withTestIdentity(ctx)
 
 	conn, err := grpc.DialContext(ctx, agentsAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	require.NoError(t, err)
