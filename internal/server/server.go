@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
+	"github.com/agynio/agents/internal/auth"
 	"github.com/agynio/agents/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -22,12 +23,13 @@ func New(store *store.Store) *Server {
 }
 
 func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentRequest) (*agentsv1.CreateAgentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	modelID, err := parseUUID(req.GetModel())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "model: %v", err)
 	}
 	resources := toStoreComputeResources(req.GetResources())
-	agent, err := s.store.CreateAgent(ctx, store.AgentInput{
+	agent, err := s.store.CreateAgent(ctx, tenantID, store.AgentInput{
 		Name:          req.GetName(),
 		Role:          req.GetRole(),
 		Model:         modelID,
@@ -43,11 +45,12 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 }
 
 func (s *Server) GetAgent(ctx context.Context, req *agentsv1.GetAgentRequest) (*agentsv1.GetAgentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	agent, err := s.store.GetAgent(ctx, id)
+	agent, err := s.store.GetAgent(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -55,6 +58,7 @@ func (s *Server) GetAgent(ctx context.Context, req *agentsv1.GetAgentRequest) (*
 }
 
 func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentRequest) (*agentsv1.UpdateAgentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -96,7 +100,7 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 		update.Resources = &resources
 	}
 
-	agent, err := s.store.UpdateAgent(ctx, id, update)
+	agent, err := s.store.UpdateAgent(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -104,22 +108,24 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 }
 
 func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentRequest) (*agentsv1.DeleteAgentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteAgent(ctx, id); err != nil {
+	if err := s.store.DeleteAgent(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteAgentResponse{}, nil
 }
 
 func (s *Server) ListAgents(ctx context.Context, req *agentsv1.ListAgentsRequest) (*agentsv1.ListAgentsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
-	result, err := s.store.ListAgents(ctx, store.AgentFilter{}, req.GetPageSize(), cursor)
+	result, err := s.store.ListAgents(ctx, tenantID, store.AgentFilter{}, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -128,7 +134,8 @@ func (s *Server) ListAgents(ctx context.Context, req *agentsv1.ListAgentsRequest
 }
 
 func (s *Server) CreateVolume(ctx context.Context, req *agentsv1.CreateVolumeRequest) (*agentsv1.CreateVolumeResponse, error) {
-	volume, err := s.store.CreateVolume(ctx, store.VolumeInput{
+	tenantID := auth.TenantIDFromContext(ctx)
+	volume, err := s.store.CreateVolume(ctx, tenantID, store.VolumeInput{
 		Persistent:  req.GetPersistent(),
 		MountPath:   req.GetMountPath(),
 		Size:        req.GetSize(),
@@ -141,11 +148,12 @@ func (s *Server) CreateVolume(ctx context.Context, req *agentsv1.CreateVolumeReq
 }
 
 func (s *Server) GetVolume(ctx context.Context, req *agentsv1.GetVolumeRequest) (*agentsv1.GetVolumeResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	volume, err := s.store.GetVolume(ctx, id)
+	volume, err := s.store.GetVolume(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -153,6 +161,7 @@ func (s *Server) GetVolume(ctx context.Context, req *agentsv1.GetVolumeRequest) 
 }
 
 func (s *Server) UpdateVolume(ctx context.Context, req *agentsv1.UpdateVolumeRequest) (*agentsv1.UpdateVolumeResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -179,7 +188,7 @@ func (s *Server) UpdateVolume(ctx context.Context, req *agentsv1.UpdateVolumeReq
 		update.Description = &value
 	}
 
-	volume, err := s.store.UpdateVolume(ctx, id, update)
+	volume, err := s.store.UpdateVolume(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -187,22 +196,24 @@ func (s *Server) UpdateVolume(ctx context.Context, req *agentsv1.UpdateVolumeReq
 }
 
 func (s *Server) DeleteVolume(ctx context.Context, req *agentsv1.DeleteVolumeRequest) (*agentsv1.DeleteVolumeResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteVolume(ctx, id); err != nil {
+	if err := s.store.DeleteVolume(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteVolumeResponse{}, nil
 }
 
 func (s *Server) ListVolumes(ctx context.Context, req *agentsv1.ListVolumesRequest) (*agentsv1.ListVolumesResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
 	}
-	result, err := s.store.ListVolumes(ctx, store.VolumeFilter{}, req.GetPageSize(), cursor)
+	result, err := s.store.ListVolumes(ctx, tenantID, store.VolumeFilter{}, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -211,6 +222,7 @@ func (s *Server) ListVolumes(ctx context.Context, req *agentsv1.ListVolumesReque
 }
 
 func (s *Server) CreateVolumeAttachment(ctx context.Context, req *agentsv1.CreateVolumeAttachmentRequest) (*agentsv1.CreateVolumeAttachmentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	volumeID, err := parseUUID(req.GetVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "volume_id: %v", err)
@@ -240,7 +252,7 @@ func (s *Server) CreateVolumeAttachment(ctx context.Context, req *agentsv1.Creat
 		return nil, status.Error(codes.InvalidArgument, "target must be specified")
 	}
 
-	attachment, err := s.store.CreateVolumeAttachment(ctx, input)
+	attachment, err := s.store.CreateVolumeAttachment(ctx, tenantID, input)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -248,11 +260,12 @@ func (s *Server) CreateVolumeAttachment(ctx context.Context, req *agentsv1.Creat
 }
 
 func (s *Server) GetVolumeAttachment(ctx context.Context, req *agentsv1.GetVolumeAttachmentRequest) (*agentsv1.GetVolumeAttachmentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	attachment, err := s.store.GetVolumeAttachment(ctx, id)
+	attachment, err := s.store.GetVolumeAttachment(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -260,17 +273,19 @@ func (s *Server) GetVolumeAttachment(ctx context.Context, req *agentsv1.GetVolum
 }
 
 func (s *Server) DeleteVolumeAttachment(ctx context.Context, req *agentsv1.DeleteVolumeAttachmentRequest) (*agentsv1.DeleteVolumeAttachmentResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteVolumeAttachment(ctx, id); err != nil {
+	if err := s.store.DeleteVolumeAttachment(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteVolumeAttachmentResponse{}, nil
 }
 
 func (s *Server) ListVolumeAttachments(ctx context.Context, req *agentsv1.ListVolumeAttachmentsRequest) (*agentsv1.ListVolumeAttachmentsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -306,7 +321,7 @@ func (s *Server) ListVolumeAttachments(ctx context.Context, req *agentsv1.ListVo
 		filter.HookID = &hookID
 	}
 
-	result, err := s.store.ListVolumeAttachments(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListVolumeAttachments(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -315,12 +330,13 @@ func (s *Server) ListVolumeAttachments(ctx context.Context, req *agentsv1.ListVo
 }
 
 func (s *Server) CreateMcp(ctx context.Context, req *agentsv1.CreateMcpRequest) (*agentsv1.CreateMcpResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	agentID, err := parseUUID(req.GetAgentId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
 	}
 	resources := toStoreComputeResources(req.GetResources())
-	mcp, err := s.store.CreateMcp(ctx, store.McpInput{
+	mcp, err := s.store.CreateMcp(ctx, tenantID, store.McpInput{
 		AgentID:     agentID,
 		Image:       req.GetImage(),
 		Command:     req.GetCommand(),
@@ -334,11 +350,12 @@ func (s *Server) CreateMcp(ctx context.Context, req *agentsv1.CreateMcpRequest) 
 }
 
 func (s *Server) GetMcp(ctx context.Context, req *agentsv1.GetMcpRequest) (*agentsv1.GetMcpResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	mcp, err := s.store.GetMcp(ctx, id)
+	mcp, err := s.store.GetMcp(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -346,6 +363,7 @@ func (s *Server) GetMcp(ctx context.Context, req *agentsv1.GetMcpRequest) (*agen
 }
 
 func (s *Server) UpdateMcp(ctx context.Context, req *agentsv1.UpdateMcpRequest) (*agentsv1.UpdateMcpResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -372,7 +390,7 @@ func (s *Server) UpdateMcp(ctx context.Context, req *agentsv1.UpdateMcpRequest) 
 		update.Description = &value
 	}
 
-	mcp, err := s.store.UpdateMcp(ctx, id, update)
+	mcp, err := s.store.UpdateMcp(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -380,17 +398,19 @@ func (s *Server) UpdateMcp(ctx context.Context, req *agentsv1.UpdateMcpRequest) 
 }
 
 func (s *Server) DeleteMcp(ctx context.Context, req *agentsv1.DeleteMcpRequest) (*agentsv1.DeleteMcpResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteMcp(ctx, id); err != nil {
+	if err := s.store.DeleteMcp(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteMcpResponse{}, nil
 }
 
 func (s *Server) ListMcps(ctx context.Context, req *agentsv1.ListMcpsRequest) (*agentsv1.ListMcpsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -405,7 +425,7 @@ func (s *Server) ListMcps(ctx context.Context, req *agentsv1.ListMcpsRequest) (*
 		filter.AgentID = &agentID
 	}
 
-	result, err := s.store.ListMcps(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListMcps(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -414,11 +434,12 @@ func (s *Server) ListMcps(ctx context.Context, req *agentsv1.ListMcpsRequest) (*
 }
 
 func (s *Server) CreateSkill(ctx context.Context, req *agentsv1.CreateSkillRequest) (*agentsv1.CreateSkillResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	agentID, err := parseUUID(req.GetAgentId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
 	}
-	skill, err := s.store.CreateSkill(ctx, store.SkillInput{
+	skill, err := s.store.CreateSkill(ctx, tenantID, store.SkillInput{
 		AgentID:     agentID,
 		Name:        req.GetName(),
 		Body:        req.GetBody(),
@@ -431,11 +452,12 @@ func (s *Server) CreateSkill(ctx context.Context, req *agentsv1.CreateSkillReque
 }
 
 func (s *Server) GetSkill(ctx context.Context, req *agentsv1.GetSkillRequest) (*agentsv1.GetSkillResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	skill, err := s.store.GetSkill(ctx, id)
+	skill, err := s.store.GetSkill(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -443,6 +465,7 @@ func (s *Server) GetSkill(ctx context.Context, req *agentsv1.GetSkillRequest) (*
 }
 
 func (s *Server) UpdateSkill(ctx context.Context, req *agentsv1.UpdateSkillRequest) (*agentsv1.UpdateSkillResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -465,7 +488,7 @@ func (s *Server) UpdateSkill(ctx context.Context, req *agentsv1.UpdateSkillReque
 		update.Description = &value
 	}
 
-	skill, err := s.store.UpdateSkill(ctx, id, update)
+	skill, err := s.store.UpdateSkill(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -473,17 +496,19 @@ func (s *Server) UpdateSkill(ctx context.Context, req *agentsv1.UpdateSkillReque
 }
 
 func (s *Server) DeleteSkill(ctx context.Context, req *agentsv1.DeleteSkillRequest) (*agentsv1.DeleteSkillResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteSkill(ctx, id); err != nil {
+	if err := s.store.DeleteSkill(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteSkillResponse{}, nil
 }
 
 func (s *Server) ListSkills(ctx context.Context, req *agentsv1.ListSkillsRequest) (*agentsv1.ListSkillsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -498,7 +523,7 @@ func (s *Server) ListSkills(ctx context.Context, req *agentsv1.ListSkillsRequest
 		filter.AgentID = &agentID
 	}
 
-	result, err := s.store.ListSkills(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListSkills(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -507,12 +532,13 @@ func (s *Server) ListSkills(ctx context.Context, req *agentsv1.ListSkillsRequest
 }
 
 func (s *Server) CreateHook(ctx context.Context, req *agentsv1.CreateHookRequest) (*agentsv1.CreateHookResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	agentID, err := parseUUID(req.GetAgentId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
 	}
 	resources := toStoreComputeResources(req.GetResources())
-	hook, err := s.store.CreateHook(ctx, store.HookInput{
+	hook, err := s.store.CreateHook(ctx, tenantID, store.HookInput{
 		AgentID:     agentID,
 		Event:       req.GetEvent(),
 		Function:    req.GetFunction(),
@@ -527,11 +553,12 @@ func (s *Server) CreateHook(ctx context.Context, req *agentsv1.CreateHookRequest
 }
 
 func (s *Server) GetHook(ctx context.Context, req *agentsv1.GetHookRequest) (*agentsv1.GetHookResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	hook, err := s.store.GetHook(ctx, id)
+	hook, err := s.store.GetHook(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -539,6 +566,7 @@ func (s *Server) GetHook(ctx context.Context, req *agentsv1.GetHookRequest) (*ag
 }
 
 func (s *Server) UpdateHook(ctx context.Context, req *agentsv1.UpdateHookRequest) (*agentsv1.UpdateHookResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -569,7 +597,7 @@ func (s *Server) UpdateHook(ctx context.Context, req *agentsv1.UpdateHookRequest
 		update.Description = &value
 	}
 
-	hook, err := s.store.UpdateHook(ctx, id, update)
+	hook, err := s.store.UpdateHook(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -577,17 +605,19 @@ func (s *Server) UpdateHook(ctx context.Context, req *agentsv1.UpdateHookRequest
 }
 
 func (s *Server) DeleteHook(ctx context.Context, req *agentsv1.DeleteHookRequest) (*agentsv1.DeleteHookResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteHook(ctx, id); err != nil {
+	if err := s.store.DeleteHook(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteHookResponse{}, nil
 }
 
 func (s *Server) ListHooks(ctx context.Context, req *agentsv1.ListHooksRequest) (*agentsv1.ListHooksResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -602,7 +632,7 @@ func (s *Server) ListHooks(ctx context.Context, req *agentsv1.ListHooksRequest) 
 		filter.AgentID = &agentID
 	}
 
-	result, err := s.store.ListHooks(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListHooks(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -611,6 +641,7 @@ func (s *Server) ListHooks(ctx context.Context, req *agentsv1.ListHooksRequest) 
 }
 
 func (s *Server) CreateEnv(ctx context.Context, req *agentsv1.CreateEnvRequest) (*agentsv1.CreateEnvResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	input := store.EnvInput{
 		Name:        req.GetName(),
 		Description: req.GetDescription(),
@@ -653,7 +684,7 @@ func (s *Server) CreateEnv(ctx context.Context, req *agentsv1.CreateEnvRequest) 
 		return nil, status.Error(codes.InvalidArgument, "source must be specified")
 	}
 
-	env, err := s.store.CreateEnv(ctx, input)
+	env, err := s.store.CreateEnv(ctx, tenantID, input)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -661,11 +692,12 @@ func (s *Server) CreateEnv(ctx context.Context, req *agentsv1.CreateEnvRequest) 
 }
 
 func (s *Server) GetEnv(ctx context.Context, req *agentsv1.GetEnvRequest) (*agentsv1.GetEnvResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	env, err := s.store.GetEnv(ctx, id)
+	env, err := s.store.GetEnv(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -673,6 +705,7 @@ func (s *Server) GetEnv(ctx context.Context, req *agentsv1.GetEnvRequest) (*agen
 }
 
 func (s *Server) UpdateEnv(ctx context.Context, req *agentsv1.UpdateEnvRequest) (*agentsv1.UpdateEnvResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -705,7 +738,7 @@ func (s *Server) UpdateEnv(ctx context.Context, req *agentsv1.UpdateEnvRequest) 
 		update.SecretID = &secretID
 	}
 
-	env, err := s.store.UpdateEnv(ctx, id, update)
+	env, err := s.store.UpdateEnv(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -713,17 +746,19 @@ func (s *Server) UpdateEnv(ctx context.Context, req *agentsv1.UpdateEnvRequest) 
 }
 
 func (s *Server) DeleteEnv(ctx context.Context, req *agentsv1.DeleteEnvRequest) (*agentsv1.DeleteEnvResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteEnv(ctx, id); err != nil {
+	if err := s.store.DeleteEnv(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteEnvResponse{}, nil
 }
 
 func (s *Server) ListEnvs(ctx context.Context, req *agentsv1.ListEnvsRequest) (*agentsv1.ListEnvsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -752,7 +787,7 @@ func (s *Server) ListEnvs(ctx context.Context, req *agentsv1.ListEnvsRequest) (*
 		filter.HookID = &hookID
 	}
 
-	result, err := s.store.ListEnvs(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListEnvs(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -761,6 +796,7 @@ func (s *Server) ListEnvs(ctx context.Context, req *agentsv1.ListEnvsRequest) (*
 }
 
 func (s *Server) CreateInitScript(ctx context.Context, req *agentsv1.CreateInitScriptRequest) (*agentsv1.CreateInitScriptResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	input := store.InitScriptInput{
 		Script:      req.GetScript(),
 		Description: req.GetDescription(),
@@ -789,7 +825,7 @@ func (s *Server) CreateInitScript(ctx context.Context, req *agentsv1.CreateInitS
 		return nil, status.Error(codes.InvalidArgument, "target must be specified")
 	}
 
-	script, err := s.store.CreateInitScript(ctx, input)
+	script, err := s.store.CreateInitScript(ctx, tenantID, input)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -797,11 +833,12 @@ func (s *Server) CreateInitScript(ctx context.Context, req *agentsv1.CreateInitS
 }
 
 func (s *Server) GetInitScript(ctx context.Context, req *agentsv1.GetInitScriptRequest) (*agentsv1.GetInitScriptResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	script, err := s.store.GetInitScript(ctx, id)
+	script, err := s.store.GetInitScript(ctx, tenantID, id)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -809,6 +846,7 @@ func (s *Server) GetInitScript(ctx context.Context, req *agentsv1.GetInitScriptR
 }
 
 func (s *Server) UpdateInitScript(ctx context.Context, req *agentsv1.UpdateInitScriptRequest) (*agentsv1.UpdateInitScriptResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -827,7 +865,7 @@ func (s *Server) UpdateInitScript(ctx context.Context, req *agentsv1.UpdateInitS
 		update.Description = &value
 	}
 
-	script, err := s.store.UpdateInitScript(ctx, id, update)
+	script, err := s.store.UpdateInitScript(ctx, tenantID, id, update)
 	if err != nil {
 		return nil, toStatusError(err)
 	}
@@ -835,17 +873,19 @@ func (s *Server) UpdateInitScript(ctx context.Context, req *agentsv1.UpdateInitS
 }
 
 func (s *Server) DeleteInitScript(ctx context.Context, req *agentsv1.DeleteInitScriptRequest) (*agentsv1.DeleteInitScriptResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
-	if err := s.store.DeleteInitScript(ctx, id); err != nil {
+	if err := s.store.DeleteInitScript(ctx, tenantID, id); err != nil {
 		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteInitScriptResponse{}, nil
 }
 
 func (s *Server) ListInitScripts(ctx context.Context, req *agentsv1.ListInitScriptsRequest) (*agentsv1.ListInitScriptsResponse, error) {
+	tenantID := auth.TenantIDFromContext(ctx)
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid page_token: %v", err)
@@ -874,7 +914,7 @@ func (s *Server) ListInitScripts(ctx context.Context, req *agentsv1.ListInitScri
 		filter.HookID = &hookID
 	}
 
-	result, err := s.store.ListInitScripts(ctx, filter, req.GetPageSize(), cursor)
+	result, err := s.store.ListInitScripts(ctx, tenantID, filter, req.GetPageSize(), cursor)
 	if err != nil {
 		return nil, toStatusError(err)
 	}

@@ -8,6 +8,7 @@ import (
 
 type EntityMeta struct {
 	ID        uuid.UUID
+	TenantID  uuid.UUID
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
