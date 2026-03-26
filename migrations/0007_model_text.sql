@@ -1,2 +1,0 @@
-ALTER TABLE agents
-    ALTER COLUMN model TYPE TEXT;
