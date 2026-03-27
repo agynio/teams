@@ -4,18 +4,14 @@
 package e2e
 
 import (
-	"context"
 	"os"
-
-	"google.golang.org/grpc/metadata"
 )
 
 var agentsAddr = envOrDefault("AGENTS_ADDR", "agents:50051")
 
 const (
-	testOrganizationID = "11111111-1111-1111-1111-111111111111"
-	testIdentityID     = "22222222-2222-2222-2222-222222222222"
-	testIdentityType   = "user"
+	testOrganizationID    = "11111111-1111-1111-1111-111111111111"
+	testOrganizationIDAlt = "33333333-3333-3333-3333-333333333333"
 )
 
 func envOrDefault(key, fallback string) string {
@@ -23,12 +19,4 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func withTestIdentity(ctx context.Context) context.Context {
-	md := metadata.Pairs(
-		"x-identity-id", testIdentityID,
-		"x-identity-type", testIdentityType,
-	)
-	return metadata.NewOutgoingContext(ctx, md)
 }

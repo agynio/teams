@@ -124,9 +124,14 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 }
 
 func (s *Server) ListAgents(ctx context.Context, req *agentsv1.ListAgentsRequest) (*agentsv1.ListAgentsResponse, error) {
-	organizationID, err := parseUUID(req.GetOrganizationId())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "organization_id: %v", err)
+	var organizationID *uuid.UUID
+	organizationValue := req.GetOrganizationId()
+	if organizationValue != "" {
+		parsedOrganizationID, err := parseUUID(organizationValue)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "organization_id: %v", err)
+		}
+		organizationID = &parsedOrganizationID
 	}
 	cursor, err := decodePageCursor(req.GetPageToken())
 	if err != nil {

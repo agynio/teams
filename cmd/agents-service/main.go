@@ -11,7 +11,6 @@ import (
 	"syscall"
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
-	"github.com/agynio/agents/internal/auth"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
@@ -50,7 +49,7 @@ func run() error {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
-	grpcServer := grpc.NewServer(grpc.UnaryInterceptor(auth.UnaryServerInterceptor()))
+	grpcServer := grpc.NewServer()
 	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool)))
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddress)
