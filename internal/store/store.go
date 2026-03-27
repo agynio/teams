@@ -319,9 +319,12 @@ func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (s *Store) ListAgents(ctx context.Context, organizationID uuid.UUID, _ AgentFilter, pageSize int32, cursor *PageCursor) (AgentListResult, error) {
-	clauses := []string{"organization_id = $1"}
-	args := []any{organizationID}
+func (s *Store) ListAgents(ctx context.Context, organizationID *uuid.UUID, _ AgentFilter, pageSize int32, cursor *PageCursor) (AgentListResult, error) {
+	var clauses []string
+	var args []any
+	if organizationID != nil {
+		clauses, args = appendClause(clauses, args, "organization_id = $%d", *organizationID)
+	}
 	agents, nextCursor, err := listEntities(ctx, s.pool,
 		fmt.Sprintf("SELECT %s FROM agents", agentColumns),
 		clauses,

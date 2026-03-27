@@ -23,7 +23,6 @@ const listPageSize int32 = 50
 func TestAgentsServiceE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	ctx = withTestIdentity(ctx)
 
 	conn, err := grpc.DialContext(ctx, agentsAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 	require.NoError(t, err)
@@ -63,6 +62,19 @@ func TestAgentsServiceE2E(t *testing.T) {
 		require.NoError(t, err)
 		agentID2 := agentResp2.Agent.Meta.Id
 
+		agentResp3, err := client.CreateAgent(ctx, &agentsv1.CreateAgentRequest{
+			OrganizationId: testOrganizationIDAlt,
+			Name:           "Agent Gamma " + testID,
+			Role:           "designer",
+			Model:          uuid.NewString(),
+			Description:    "Third agent " + testID,
+			Configuration:  "config-gamma",
+			Image:          "agent-image:latest",
+			Resources:      baseResources(),
+		})
+		require.NoError(t, err)
+		agentID3 := agentResp3.Agent.Meta.Id
+
 		updatedAgentResp, err := client.UpdateAgent(ctx, &agentsv1.UpdateAgentRequest{
 			Id:        agentID1,
 			Name:      proto.String("Agent Alpha Updated " + testID),
@@ -81,9 +93,16 @@ func TestAgentsServiceE2E(t *testing.T) {
 		require.True(t, hasID(listAgents, agentID1))
 		require.True(t, hasID(listAgents, agentID2))
 
+		listAllAgents := listAllAgents(ctx, t, client)
+		require.True(t, hasID(listAllAgents, agentID1))
+		require.True(t, hasID(listAllAgents, agentID2))
+		require.True(t, hasID(listAllAgents, agentID3))
+
 		_, err = client.DeleteAgent(ctx, &agentsv1.DeleteAgentRequest{Id: agentID2})
 		require.NoError(t, err)
 		_, err = client.DeleteAgent(ctx, &agentsv1.DeleteAgentRequest{Id: agentID1})
+		require.NoError(t, err)
+		_, err = client.DeleteAgent(ctx, &agentsv1.DeleteAgentRequest{Id: agentID3})
 		require.NoError(t, err)
 	})
 
@@ -625,6 +644,16 @@ func listPaged[T any](t *testing.T, resource string, fetch func(pageToken string
 func listAgents(ctx context.Context, t *testing.T, client agentsv1.AgentsServiceClient) []*agentsv1.Agent {
 	return listPaged(t, "agent", func(pageToken string) ([]*agentsv1.Agent, string, error) {
 		resp, err := client.ListAgents(ctx, &agentsv1.ListAgentsRequest{OrganizationId: testOrganizationID, PageSize: listPageSize, PageToken: pageToken})
+		if err != nil {
+			return nil, "", err
+		}
+		return resp.Agents, resp.NextPageToken, nil
+	})
+}
+
+func listAllAgents(ctx context.Context, t *testing.T, client agentsv1.AgentsServiceClient) []*agentsv1.Agent {
+	return listPaged(t, "agent", func(pageToken string) ([]*agentsv1.Agent, string, error) {
+		resp, err := client.ListAgents(ctx, &agentsv1.ListAgentsRequest{PageSize: listPageSize, PageToken: pageToken})
 		if err != nil {
 			return nil, "", err
 		}
