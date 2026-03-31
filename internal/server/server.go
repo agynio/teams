@@ -135,11 +135,15 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	if err := s.store.DeleteAgent(ctx, id); err != nil {
-		return nil, toStatusError(err)
-	}
 	if err := s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID); err != nil {
 		return nil, status.Errorf(codes.Internal, "authorization delete failed: %v", err)
+	}
+	if err := s.store.DeleteAgent(ctx, id); err != nil {
+		rollbackErr := s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
+		if rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "agent delete failed: %v; authorization rollback failed: %v", err, rollbackErr)
+		}
+		return nil, toStatusError(err)
 	}
 	return &agentsv1.DeleteAgentResponse{}, nil
 }
