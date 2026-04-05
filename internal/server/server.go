@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
+	identityv1 "github.com/agynio/agents/.gen/go/agynio/api/identity/v1"
 	"github.com/agynio/agents/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -15,22 +16,26 @@ import (
 
 type Server struct {
 	agentsv1.UnimplementedAgentsServiceServer
-	store *store.Store
-	authz AuthorizationWriter
+	store          *store.Store
+	authz          AuthorizationWriter
+	identityClient identityv1.IdentityServiceClient
 }
 
 const maxMcpNameLength = 63
 
 var mcpNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
-func New(store *store.Store, authz AuthorizationWriter) *Server {
+func New(store *store.Store, authz AuthorizationWriter, identityClient identityv1.IdentityServiceClient) *Server {
 	if store == nil {
 		panic("store is required")
 	}
 	if authz == nil {
 		panic("authorization client is required")
 	}
-	return &Server{store: store, authz: authz}
+	if identityClient == nil {
+		panic("identity client is required")
+	}
+	return &Server{store: store, authz: authz, identityClient: identityClient}
 }
 
 func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentRequest) (*agentsv1.CreateAgentResponse, error) {
@@ -62,6 +67,25 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 			return nil, status.Errorf(codes.Internal, "authorization write failed: %v; rollback failed: %v", err, rollbackErr)
 		}
 		return nil, status.Errorf(codes.Internal, "authorization write failed: %v", err)
+	}
+	_, err = s.identityClient.RegisterIdentity(ctx, &identityv1.RegisterIdentityRequest{
+		IdentityId:   agent.Meta.ID.String(),
+		IdentityType: identityv1.IdentityType_IDENTITY_TYPE_AGENT,
+	})
+	if err != nil {
+		rollbackErr := s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
+		if rollbackErr != nil {
+			deleteErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
+			if deleteErr != nil {
+				return nil, status.Errorf(codes.Internal, "register identity: %v; authorization rollback failed: %v; agent rollback failed: %v", err, rollbackErr, deleteErr)
+			}
+			return nil, status.Errorf(codes.Internal, "register identity: %v; authorization rollback failed: %v", err, rollbackErr)
+		}
+		deleteErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
+		if deleteErr != nil {
+			return nil, status.Errorf(codes.Internal, "register identity: %v; agent rollback failed: %v", err, deleteErr)
+		}
+		return nil, status.Errorf(codes.Internal, "register identity: %v", err)
 	}
 	return &agentsv1.CreateAgentResponse{Agent: toProtoAgent(agent)}, nil
 }

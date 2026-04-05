@@ -12,6 +12,7 @@ import (
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
 	authorizationv1 "github.com/agynio/agents/.gen/go/agynio/api/authorization/v1"
+	identityv1 "github.com/agynio/agents/.gen/go/agynio/api/identity/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -60,8 +61,16 @@ func run() error {
 		_ = authzConn.Close()
 	}()
 	authzClient := authorizationv1.NewAuthorizationServiceClient(authzConn)
+	identityConn, err := grpc.NewClient(cfg.IdentityServiceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("connect to identity service: %w", err)
+	}
+	defer func() {
+		_ = identityConn.Close()
+	}()
+	identityClient := identityv1.NewIdentityServiceClient(identityConn)
 
-	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient))
+	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient, identityClient))
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {
