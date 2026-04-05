@@ -60,8 +60,16 @@ func run() error {
 		_ = authzConn.Close()
 	}()
 	authzClient := authorizationv1.NewAuthorizationServiceClient(authzConn)
+	identityConn, err := grpc.NewClient(cfg.IdentityServiceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("connect to identity service: %w", err)
+	}
+	defer func() {
+		_ = identityConn.Close()
+	}()
+	identity := server.NewIdentityWriter(identityConn)
 
-	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient))
+	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient, identity))
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {
