@@ -18,14 +18,14 @@ type Server struct {
 	agentsv1.UnimplementedAgentsServiceServer
 	store          *store.Store
 	authz          AuthorizationWriter
-	identityClient identityv1.IdentityServiceClient
+	identityClient IdentityWriter
 }
 
 const maxMcpNameLength = 63
 
 var mcpNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
-func New(store *store.Store, authz AuthorizationWriter, identityClient identityv1.IdentityServiceClient) *Server {
+func New(store *store.Store, authz AuthorizationWriter, identityClient IdentityWriter) *Server {
 	if store == nil {
 		panic("store is required")
 	}
@@ -36,6 +36,18 @@ func New(store *store.Store, authz AuthorizationWriter, identityClient identityv
 		panic("identity client is required")
 	}
 	return &Server{store: store, authz: authz, identityClient: identityClient}
+}
+
+func (s *Server) registerAgentIdentity(ctx context.Context, agentID uuid.UUID) error {
+	_, err := s.identityClient.RegisterIdentity(ctx, &identityv1.RegisterIdentityRequest{
+		IdentityId:   agentID.String(),
+		IdentityType: identityv1.IdentityType_IDENTITY_TYPE_AGENT,
+	})
+	return err
+}
+
+func (s *Server) deregisterAgentIdentity(ctx context.Context, agentID uuid.UUID) error {
+	return s.identityClient.DeregisterIdentity(ctx, agentID.String())
 }
 
 func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentRequest) (*agentsv1.CreateAgentResponse, error) {
@@ -68,22 +80,13 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 		}
 		return nil, status.Errorf(codes.Internal, "authorization write failed: %v", err)
 	}
-	_, err = s.identityClient.RegisterIdentity(ctx, &identityv1.RegisterIdentityRequest{
-		IdentityId:   agent.Meta.ID.String(),
-		IdentityType: identityv1.IdentityType_IDENTITY_TYPE_AGENT,
-	})
-	if err != nil {
-		rollbackErr := s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
+	if err := s.registerAgentIdentity(ctx, agent.Meta.ID); err != nil {
+		rollbackErr := errors.Join(
+			s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID),
+			s.store.DeleteAgent(ctx, agent.Meta.ID),
+		)
 		if rollbackErr != nil {
-			deleteErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
-			if deleteErr != nil {
-				return nil, status.Errorf(codes.Internal, "register identity: %v; authorization rollback failed: %v; agent rollback failed: %v", err, rollbackErr, deleteErr)
-			}
-			return nil, status.Errorf(codes.Internal, "register identity: %v; authorization rollback failed: %v", err, rollbackErr)
-		}
-		deleteErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
-		if deleteErr != nil {
-			return nil, status.Errorf(codes.Internal, "register identity: %v; agent rollback failed: %v", err, deleteErr)
+			return nil, status.Errorf(codes.Internal, "register identity: %v; rollback: %v", err, rollbackErr)
 		}
 		return nil, status.Errorf(codes.Internal, "register identity: %v", err)
 	}
@@ -167,10 +170,20 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 	if err := s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID); err != nil {
 		return nil, status.Errorf(codes.Internal, "authorization delete failed: %v", err)
 	}
-	if err := s.store.DeleteAgent(ctx, id); err != nil {
+	if err := s.deregisterAgentIdentity(ctx, agent.Meta.ID); err != nil {
 		rollbackErr := s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
 		if rollbackErr != nil {
-			return nil, status.Errorf(codes.Internal, "agent delete failed: %v; authorization rollback failed: %v", err, rollbackErr)
+			return nil, status.Errorf(codes.Internal, "deregister identity: %v; rollback: %v", err, rollbackErr)
+		}
+		return nil, status.Errorf(codes.Internal, "deregister identity: %v", err)
+	}
+	if err := s.store.DeleteAgent(ctx, id); err != nil {
+		rollbackErr := errors.Join(
+			s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID),
+			s.registerAgentIdentity(ctx, agent.Meta.ID),
+		)
+		if rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "agent delete failed: %v; rollback: %v", err, rollbackErr)
 		}
 		return nil, toStatusError(err)
 	}
