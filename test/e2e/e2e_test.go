@@ -58,6 +58,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Second agent " + testID,
 			Configuration:  "config-beta",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -71,6 +72,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Third agent " + testID,
 			Configuration:  "config-gamma",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -143,6 +145,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Mcp agent " + testID,
 			Configuration:  "config-mcp",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -186,6 +189,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Skill agent " + testID,
 			Configuration:  "config-skill",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -226,6 +230,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Hook agent " + testID,
 			Configuration:  "config-hook",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -268,6 +273,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Env agent " + testID,
 			Configuration:  "config-env",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -361,6 +367,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Init agent " + testID,
 			Configuration:  "config-init",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -450,6 +457,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Attachment agent " + testID,
 			Configuration:  "config-attachment",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -561,6 +569,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "Image pull secret agent " + testID,
 			Configuration:  "config-image-pull-secret",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
@@ -650,6 +659,19 @@ func TestAgentsServiceE2E(t *testing.T) {
 	})
 
 	t.Run("NegativePaths", func(t *testing.T) {
+		_, err := client.CreateAgent(ctx, &agentsv1.CreateAgentRequest{
+			OrganizationId: testOrganizationID,
+			Name:           "Missing Init Image",
+			Role:           "agent",
+			Model:          uuid.NewString(),
+			Description:    "negative",
+			Configuration:  "config-negative",
+			Image:          "agent-image:latest",
+			InitImage:      "",
+			Resources:      baseResources(),
+		})
+		requireStatusCode(t, err, codes.InvalidArgument)
+
 		_, err := client.GetAgent(ctx, &agentsv1.GetAgentRequest{Id: uuid.NewString()})
 		requireStatusCode(t, err, codes.NotFound)
 
@@ -674,10 +696,17 @@ func TestAgentsServiceE2E(t *testing.T) {
 			Description:    "negative",
 			Configuration:  "config-negative",
 			Image:          "agent-image:latest",
+			InitImage:      "ghcr.io/agynio/agent-init-codex:v1.0.0",
 			Resources:      baseResources(),
 		})
 		require.NoError(t, err)
 		agentID := agentResp.Agent.Meta.Id
+
+		_, err = client.UpdateAgent(ctx, &agentsv1.UpdateAgentRequest{
+			Id:        agentID,
+			InitImage: proto.String(""),
+		})
+		requireStatusCode(t, err, codes.InvalidArgument)
 
 		mcpResp, err := client.CreateMcp(ctx, &agentsv1.CreateMcpRequest{
 			AgentId:     agentID,
