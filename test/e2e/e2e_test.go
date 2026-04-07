@@ -672,7 +672,7 @@ func TestAgentsServiceE2E(t *testing.T) {
 		})
 		requireStatusCode(t, err, codes.InvalidArgument)
 
-		_, err := client.GetAgent(ctx, &agentsv1.GetAgentRequest{Id: uuid.NewString()})
+		_, err = client.GetAgent(ctx, &agentsv1.GetAgentRequest{Id: uuid.NewString()})
 		requireStatusCode(t, err, codes.NotFound)
 
 		_, err = client.UpdateAgent(ctx, &agentsv1.UpdateAgentRequest{Id: uuid.NewString()})
