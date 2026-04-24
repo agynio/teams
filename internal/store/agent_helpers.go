@@ -84,16 +84,11 @@ WHERE va.volume_id = $1`,
 	defer rows.Close()
 
 	agents := make([]uuid.UUID, 0)
-	seen := map[uuid.UUID]struct{}{}
 	for rows.Next() {
 		var agentID uuid.UUID
 		if err := rows.Scan(&agentID); err != nil {
 			return nil, err
 		}
-		if _, ok := seen[agentID]; ok {
-			continue
-		}
-		seen[agentID] = struct{}{}
 		agents = append(agents, agentID)
 	}
 	if err := rows.Err(); err != nil {

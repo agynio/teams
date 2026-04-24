@@ -13,9 +13,6 @@ import (
 const agentUpdatedEvent = "agent.updated"
 
 func (s *Server) publishAgentUpdated(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID) {
-	if s.notifications == nil {
-		return
-	}
 	payload, err := structpb.NewStruct(map[string]any{
 		"agent_id":        agentID.String(),
 		"organization_id": organizationID.String(),
@@ -36,9 +33,6 @@ func (s *Server) publishAgentUpdated(ctx context.Context, agentID uuid.UUID, org
 }
 
 func (s *Server) publishAgentUpdatedByID(ctx context.Context, agentID uuid.UUID) {
-	if s.notifications == nil {
-		return
-	}
 	agent, err := s.store.GetAgent(ctx, agentID)
 	if err != nil {
 		log.Printf("agents: fetch agent for notification: %v", err)
@@ -69,9 +63,6 @@ func (s *Server) resolveAgentID(ctx context.Context, agentID *uuid.UUID, mcpID *
 }
 
 func (s *Server) publishAgentUpdatedForVolume(ctx context.Context, volumeID uuid.UUID) {
-	if s.notifications == nil {
-		return
-	}
 	agentIDs, err := s.store.ListAgentIDsForVolume(ctx, volumeID)
 	if err != nil {
 		log.Printf("agents: list volume agents: %v", err)
@@ -83,9 +74,6 @@ func (s *Server) publishAgentUpdatedForVolume(ctx context.Context, volumeID uuid
 }
 
 func (s *Server) publishAgentUpdatedForTarget(ctx context.Context, agentID *uuid.UUID, mcpID *uuid.UUID, hookID *uuid.UUID) {
-	if s.notifications == nil {
-		return
-	}
 	resolvedID, err := s.resolveAgentID(ctx, agentID, mcpID, hookID)
 	if err != nil {
 		log.Printf("agents: resolve agent for notification: %v", err)

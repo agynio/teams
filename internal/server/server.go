@@ -41,6 +41,9 @@ func New(store *store.Store, authz AuthorizationWriter, identity IdentityWriter,
 	if identity == nil {
 		panic("identity client is required")
 	}
+	if notifications == nil {
+		panic("notifications client is required")
+	}
 	return &Server{store: store, authz: authz, identity: identity, notifications: notifications}
 }
 
