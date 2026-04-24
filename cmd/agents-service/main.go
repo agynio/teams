@@ -12,6 +12,7 @@ import (
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
 	authorizationv1 "github.com/agynio/agents/.gen/go/agynio/api/authorization/v1"
+	notificationsv1 "github.com/agynio/agents/.gen/go/agynio/api/notifications/v1"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -68,8 +69,16 @@ func run() error {
 		_ = identityConn.Close()
 	}()
 	identity := server.NewIdentityWriter(identityConn)
+	notificationsConn, err := grpc.NewClient(cfg.NotificationsServiceAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("connect to notifications service: %w", err)
+	}
+	defer func() {
+		_ = notificationsConn.Close()
+	}()
+	notificationsClient := notificationsv1.NewNotificationsServiceClient(notificationsConn)
 
-	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient, identity))
+	agentsv1.RegisterAgentsServiceServer(grpcServer, server.New(store.New(pool), authzClient, identity, notificationsClient))
 
 	lis, err := net.Listen("tcp", cfg.GRPCAddress)
 	if err != nil {

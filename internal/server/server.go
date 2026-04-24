@@ -9,6 +9,7 @@ import (
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
 	identityv1 "github.com/agynio/agents/.gen/go/agynio/api/identity/v1"
+	notificationsv1 "github.com/agynio/agents/.gen/go/agynio/api/notifications/v1"
 	"github.com/agynio/agents/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -17,9 +18,10 @@ import (
 
 type Server struct {
 	agentsv1.UnimplementedAgentsServiceServer
-	store    *store.Store
-	authz    AuthorizationWriter
-	identity IdentityWriter
+	store         *store.Store
+	authz         AuthorizationWriter
+	identity      IdentityWriter
+	notifications notificationsv1.NotificationsServiceClient
 }
 
 const (
@@ -29,7 +31,7 @@ const (
 
 var mcpNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
-func New(store *store.Store, authz AuthorizationWriter, identity IdentityWriter) *Server {
+func New(store *store.Store, authz AuthorizationWriter, identity IdentityWriter, notifications notificationsv1.NotificationsServiceClient) *Server {
 	if store == nil {
 		panic("store is required")
 	}
@@ -39,7 +41,7 @@ func New(store *store.Store, authz AuthorizationWriter, identity IdentityWriter)
 	if identity == nil {
 		panic("identity client is required")
 	}
-	return &Server{store: store, authz: authz, identity: identity}
+	return &Server{store: store, authz: authz, identity: identity, notifications: notifications}
 }
 
 func (s *Server) registerAgentIdentity(ctx context.Context, agentID uuid.UUID) error {
@@ -139,6 +141,7 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 			return nil, status.Errorf(codes.Internal, "set nickname: %v", err)
 		}
 	}
+	s.publishAgentUpdated(ctx, agent.Meta.ID, agent.OrganizationID)
 	return &agentsv1.CreateAgentResponse{Agent: toProtoAgent(agent)}, nil
 }
 
@@ -270,6 +273,7 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 			return nil, status.Errorf(codes.Internal, "update nickname: %v", nicknameErr)
 		}
 	}
+	s.publishAgentUpdated(ctx, agent.Meta.ID, agent.OrganizationID)
 	return &agentsv1.UpdateAgentResponse{Agent: toProtoAgent(agent)}, nil
 }
 
@@ -306,6 +310,7 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 		}
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdated(ctx, agent.Meta.ID, agent.OrganizationID)
 	return &agentsv1.DeleteAgentResponse{}, nil
 }
 
@@ -346,6 +351,7 @@ func (s *Server) CreateVolume(ctx context.Context, req *agentsv1.CreateVolumeReq
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForVolume(ctx, volume.Meta.ID)
 	return &agentsv1.CreateVolumeResponse{Volume: toProtoVolume(volume)}, nil
 }
 
@@ -396,6 +402,7 @@ func (s *Server) UpdateVolume(ctx context.Context, req *agentsv1.UpdateVolumeReq
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForVolume(ctx, volume.Meta.ID)
 	return &agentsv1.UpdateVolumeResponse{Volume: toProtoVolume(volume)}, nil
 }
 
@@ -404,8 +411,15 @@ func (s *Server) DeleteVolume(ctx context.Context, req *agentsv1.DeleteVolumeReq
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	agentIDs, err := s.store.ListAgentIDsForVolume(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteVolume(ctx, id); err != nil {
 		return nil, toStatusError(err)
+	}
+	for _, agentID := range agentIDs {
+		s.publishAgentUpdatedByID(ctx, agentID)
 	}
 	return &agentsv1.DeleteVolumeResponse{}, nil
 }
@@ -461,6 +475,7 @@ func (s *Server) CreateVolumeAttachment(ctx context.Context, req *agentsv1.Creat
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, attachment.AgentID, attachment.McpID, attachment.HookID)
 	return &agentsv1.CreateVolumeAttachmentResponse{VolumeAttachment: toProtoVolumeAttachment(attachment)}, nil
 }
 
@@ -481,9 +496,14 @@ func (s *Server) DeleteVolumeAttachment(ctx context.Context, req *agentsv1.Delet
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	attachment, err := s.store.GetVolumeAttachment(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteVolumeAttachment(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, attachment.AgentID, attachment.McpID, attachment.HookID)
 	return &agentsv1.DeleteVolumeAttachmentResponse{}, nil
 }
 
@@ -573,6 +593,7 @@ func (s *Server) CreateImagePullSecretAttachment(ctx context.Context, req *agent
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, attachment.AgentID, attachment.McpID, attachment.HookID)
 	return &agentsv1.CreateImagePullSecretAttachmentResponse{ImagePullSecretAttachment: toProtoImagePullSecretAttachment(attachment)}, nil
 }
 
@@ -593,9 +614,14 @@ func (s *Server) DeleteImagePullSecretAttachment(ctx context.Context, req *agent
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	attachment, err := s.store.GetImagePullSecretAttachment(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteImagePullSecretAttachment(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, attachment.AgentID, attachment.McpID, attachment.HookID)
 	return &agentsv1.DeleteImagePullSecretAttachmentResponse{}, nil
 }
 
@@ -672,6 +698,7 @@ func (s *Server) CreateMcp(ctx context.Context, req *agentsv1.CreateMcpRequest) 
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, mcp.AgentID)
 	return &agentsv1.CreateMcpResponse{Mcp: toProtoMcp(mcp)}, nil
 }
 
@@ -718,6 +745,7 @@ func (s *Server) UpdateMcp(ctx context.Context, req *agentsv1.UpdateMcpRequest) 
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, mcp.AgentID)
 	return &agentsv1.UpdateMcpResponse{Mcp: toProtoMcp(mcp)}, nil
 }
 
@@ -726,9 +754,14 @@ func (s *Server) DeleteMcp(ctx context.Context, req *agentsv1.DeleteMcpRequest) 
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	mcp, err := s.store.GetMcp(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteMcp(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, mcp.AgentID)
 	return &agentsv1.DeleteMcpResponse{}, nil
 }
 
@@ -769,6 +802,7 @@ func (s *Server) CreateSkill(ctx context.Context, req *agentsv1.CreateSkillReque
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, skill.AgentID)
 	return &agentsv1.CreateSkillResponse{Skill: toProtoSkill(skill)}, nil
 }
 
@@ -811,6 +845,7 @@ func (s *Server) UpdateSkill(ctx context.Context, req *agentsv1.UpdateSkillReque
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, skill.AgentID)
 	return &agentsv1.UpdateSkillResponse{Skill: toProtoSkill(skill)}, nil
 }
 
@@ -819,9 +854,14 @@ func (s *Server) DeleteSkill(ctx context.Context, req *agentsv1.DeleteSkillReque
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	skill, err := s.store.GetSkill(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteSkill(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, skill.AgentID)
 	return &agentsv1.DeleteSkillResponse{}, nil
 }
 
@@ -865,6 +905,7 @@ func (s *Server) CreateHook(ctx context.Context, req *agentsv1.CreateHookRequest
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, hook.AgentID)
 	return &agentsv1.CreateHookResponse{Hook: toProtoHook(hook)}, nil
 }
 
@@ -915,6 +956,7 @@ func (s *Server) UpdateHook(ctx context.Context, req *agentsv1.UpdateHookRequest
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, hook.AgentID)
 	return &agentsv1.UpdateHookResponse{Hook: toProtoHook(hook)}, nil
 }
 
@@ -923,9 +965,14 @@ func (s *Server) DeleteHook(ctx context.Context, req *agentsv1.DeleteHookRequest
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	hook, err := s.store.GetHook(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteHook(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedByID(ctx, hook.AgentID)
 	return &agentsv1.DeleteHookResponse{}, nil
 }
 
@@ -999,6 +1046,7 @@ func (s *Server) CreateEnv(ctx context.Context, req *agentsv1.CreateEnvRequest) 
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, env.AgentID, env.McpID, env.HookID)
 	return &agentsv1.CreateEnvResponse{Env: toProtoEnv(env)}, nil
 }
 
@@ -1051,6 +1099,7 @@ func (s *Server) UpdateEnv(ctx context.Context, req *agentsv1.UpdateEnvRequest) 
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, env.AgentID, env.McpID, env.HookID)
 	return &agentsv1.UpdateEnvResponse{Env: toProtoEnv(env)}, nil
 }
 
@@ -1059,9 +1108,14 @@ func (s *Server) DeleteEnv(ctx context.Context, req *agentsv1.DeleteEnvRequest) 
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	env, err := s.store.GetEnv(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteEnv(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, env.AgentID, env.McpID, env.HookID)
 	return &agentsv1.DeleteEnvResponse{}, nil
 }
 
@@ -1142,6 +1196,7 @@ func (s *Server) CreateInitScript(ctx context.Context, req *agentsv1.CreateInitS
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, script.AgentID, script.McpID, script.HookID)
 	return &agentsv1.CreateInitScriptResponse{InitScript: toProtoInitScript(script)}, nil
 }
 
@@ -1180,6 +1235,7 @@ func (s *Server) UpdateInitScript(ctx context.Context, req *agentsv1.UpdateInitS
 	if err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, script.AgentID, script.McpID, script.HookID)
 	return &agentsv1.UpdateInitScriptResponse{InitScript: toProtoInitScript(script)}, nil
 }
 
@@ -1188,9 +1244,14 @@ func (s *Server) DeleteInitScript(ctx context.Context, req *agentsv1.DeleteInitS
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
+	script, err := s.store.GetInitScript(ctx, id)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
 	if err := s.store.DeleteInitScript(ctx, id); err != nil {
 		return nil, toStatusError(err)
 	}
+	s.publishAgentUpdatedForTarget(ctx, script.AgentID, script.McpID, script.HookID)
 	return &agentsv1.DeleteInitScriptResponse{}, nil
 }
 
