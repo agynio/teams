@@ -116,3 +116,22 @@ func listEntities[T any](
 	}
 	return items, nextCursor, nil
 }
+
+func withTx[T any](ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) (T, error)) (T, error) {
+	var zero T
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return zero, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	result, err := fn(tx)
+	if err != nil {
+		return zero, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return zero, err
+	}
+	return result, nil
+}

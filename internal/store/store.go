@@ -479,31 +479,51 @@ func (s *Store) UpdateVolume(ctx context.Context, id uuid.UUID, update VolumeUpd
 	if builder.empty() {
 		return Volume{}, fmt.Errorf("volume update requires at least one field")
 	}
-	query, args := builder.build("volumes", volumeColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	volume, err := scanVolume(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Volume{}, NotFound("volume")
+
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Volume, error) {
+		query, args := builder.build("volumes", volumeColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		volume, err := scanVolume(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Volume{}, NotFound("volume")
+			}
+			return Volume{}, err
 		}
-		return Volume{}, err
-	}
-	return volume, nil
+		agentIDs, err := agentIDsForVolume(ctx, tx, volume.Meta.ID)
+		if err != nil {
+			return Volume{}, err
+		}
+		if err := touchAgentsUpdatedAt(ctx, tx, agentIDs); err != nil {
+			return Volume{}, err
+		}
+		return volume, nil
+	})
 }
 
 func (s *Store) DeleteVolume(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM volumes WHERE id = $1`, id)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return ForeignKeyViolation("volume")
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		agentIDs, err := agentIDsForVolume(ctx, tx, id)
+		if err != nil {
+			return struct{}{}, err
 		}
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("volume")
-	}
-	return nil
+		result, err := tx.Exec(ctx, `DELETE FROM volumes WHERE id = $1`, id)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return struct{}{}, ForeignKeyViolation("volume")
+			}
+			return struct{}{}, err
+		}
+		if result.RowsAffected() == 0 {
+			return struct{}{}, NotFound("volume")
+		}
+		if err := touchAgentsUpdatedAt(ctx, tx, agentIDs); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListVolumes(ctx context.Context, organizationID uuid.UUID, _ VolumeFilter, pageSize int32, cursor *PageCursor) (VolumeListResult, error) {
@@ -524,30 +544,43 @@ func (s *Store) ListVolumes(ctx context.Context, organizationID uuid.UUID, _ Vol
 	return VolumeListResult{Volumes: volumes, NextCursor: nextCursor}, nil
 }
 
+func (s *Store) ListAgentIDsForVolume(ctx context.Context, volumeID uuid.UUID) ([]uuid.UUID, error) {
+	return agentIDsForVolume(ctx, s.pool, volumeID)
+}
+
 func (s *Store) CreateVolumeAttachment(ctx context.Context, input VolumeAttachmentInput) (VolumeAttachment, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO volume_attachments (volume_id, agent_id, mcp_id, hook_id)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (VolumeAttachment, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO volume_attachments (volume_id, agent_id, mcp_id, hook_id)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING %s`, volumeAttachmentColumns),
-		input.VolumeID,
-		input.AgentID,
-		input.McpID,
-		input.HookID,
-	)
-	attachment, err := scanVolumeAttachment(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			switch pgErr.Code {
-			case "23505":
-				return VolumeAttachment{}, AlreadyExists("volume attachment")
-			case "23503":
-				return VolumeAttachment{}, ForeignKeyViolation("volume attachment")
+			input.VolumeID,
+			input.AgentID,
+			input.McpID,
+			input.HookID,
+		)
+		attachment, err := scanVolumeAttachment(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) {
+				switch pgErr.Code {
+				case "23505":
+					return VolumeAttachment{}, AlreadyExists("volume attachment")
+				case "23503":
+					return VolumeAttachment{}, ForeignKeyViolation("volume attachment")
+				}
 			}
+			return VolumeAttachment{}, err
 		}
-		return VolumeAttachment{}, err
-	}
-	return attachment, nil
+		agentID, err := resolveAgentID(ctx, tx, attachment.AgentID, attachment.McpID, attachment.HookID)
+		if err != nil {
+			return VolumeAttachment{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return VolumeAttachment{}, err
+		}
+		return attachment, nil
+	})
 }
 
 func (s *Store) GetVolumeAttachment(ctx context.Context, id uuid.UUID) (VolumeAttachment, error) {
@@ -566,14 +599,28 @@ func (s *Store) GetVolumeAttachment(ctx context.Context, id uuid.UUID) (VolumeAt
 }
 
 func (s *Store) DeleteVolumeAttachment(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM volume_attachments WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("volume attachment")
-	}
-	return nil
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM volume_attachments WHERE id = $1 RETURNING %s`, volumeAttachmentColumns),
+			id,
+		)
+		attachment, err := scanVolumeAttachment(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("volume attachment")
+			}
+			return struct{}{}, err
+		}
+		agentID, err := resolveAgentID(ctx, tx, attachment.AgentID, attachment.McpID, attachment.HookID)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListVolumeAttachments(ctx context.Context, filter VolumeAttachmentFilter, pageSize int32, cursor *PageCursor) (VolumeAttachmentListResult, error) {
@@ -608,29 +655,38 @@ func (s *Store) ListVolumeAttachments(ctx context.Context, filter VolumeAttachme
 }
 
 func (s *Store) CreateImagePullSecretAttachment(ctx context.Context, input ImagePullSecretAttachmentInput) (ImagePullSecretAttachment, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO image_pull_secret_attachments (image_pull_secret_id, agent_id, mcp_id, hook_id)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (ImagePullSecretAttachment, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO image_pull_secret_attachments (image_pull_secret_id, agent_id, mcp_id, hook_id)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING %s`, imagePullSecretAttachmentColumns),
-		input.ImagePullSecretID,
-		input.AgentID,
-		input.McpID,
-		input.HookID,
-	)
-	attachment, err := scanImagePullSecretAttachment(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			switch pgErr.Code {
-			case "23505":
-				return ImagePullSecretAttachment{}, AlreadyExists("image pull secret attachment")
-			case "23503":
-				return ImagePullSecretAttachment{}, ForeignKeyViolation("image pull secret attachment")
+			input.ImagePullSecretID,
+			input.AgentID,
+			input.McpID,
+			input.HookID,
+		)
+		attachment, err := scanImagePullSecretAttachment(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) {
+				switch pgErr.Code {
+				case "23505":
+					return ImagePullSecretAttachment{}, AlreadyExists("image pull secret attachment")
+				case "23503":
+					return ImagePullSecretAttachment{}, ForeignKeyViolation("image pull secret attachment")
+				}
 			}
+			return ImagePullSecretAttachment{}, err
 		}
-		return ImagePullSecretAttachment{}, err
-	}
-	return attachment, nil
+		agentID, err := resolveAgentID(ctx, tx, attachment.AgentID, attachment.McpID, attachment.HookID)
+		if err != nil {
+			return ImagePullSecretAttachment{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return ImagePullSecretAttachment{}, err
+		}
+		return attachment, nil
+	})
 }
 
 func (s *Store) GetImagePullSecretAttachment(ctx context.Context, id uuid.UUID) (ImagePullSecretAttachment, error) {
@@ -649,14 +705,28 @@ func (s *Store) GetImagePullSecretAttachment(ctx context.Context, id uuid.UUID) 
 }
 
 func (s *Store) DeleteImagePullSecretAttachment(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM image_pull_secret_attachments WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("image pull secret attachment")
-	}
-	return nil
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM image_pull_secret_attachments WHERE id = $1 RETURNING %s`, imagePullSecretAttachmentColumns),
+			id,
+		)
+		attachment, err := scanImagePullSecretAttachment(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("image pull secret attachment")
+			}
+			return struct{}{}, err
+		}
+		agentID, err := resolveAgentID(ctx, tx, attachment.AgentID, attachment.McpID, attachment.HookID)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListImagePullSecretAttachments(ctx context.Context, filter ImagePullSecretAttachmentFilter, pageSize int32, cursor *PageCursor) (ImagePullSecretAttachmentListResult, error) {
@@ -691,34 +761,39 @@ func (s *Store) ListImagePullSecretAttachments(ctx context.Context, filter Image
 }
 
 func (s *Store) CreateMcp(ctx context.Context, input McpInput) (Mcp, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO mcps (agent_id, name, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Mcp, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO mcps (agent_id, name, image, command, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 RETURNING %s`, mcpColumns),
-		input.AgentID,
-		input.Name,
-		input.Image,
-		input.Command,
-		input.Resources.RequestsCPU,
-		input.Resources.RequestsMemory,
-		input.Resources.LimitsCPU,
-		input.Resources.LimitsMemory,
-		input.Description,
-	)
-	mcp, err := scanMcp(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			switch pgErr.Code {
-			case "23503":
-				return Mcp{}, ForeignKeyViolation("mcp")
-			case "23505":
-				return Mcp{}, AlreadyExists("mcp")
+			input.AgentID,
+			input.Name,
+			input.Image,
+			input.Command,
+			input.Resources.RequestsCPU,
+			input.Resources.RequestsMemory,
+			input.Resources.LimitsCPU,
+			input.Resources.LimitsMemory,
+			input.Description,
+		)
+		mcp, err := scanMcp(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) {
+				switch pgErr.Code {
+				case "23503":
+					return Mcp{}, ForeignKeyViolation("mcp")
+				case "23505":
+					return Mcp{}, AlreadyExists("mcp")
+				}
 			}
+			return Mcp{}, err
 		}
-		return Mcp{}, err
-	}
-	return mcp, nil
+		if err := touchAgentUpdatedAt(ctx, tx, mcp.AgentID); err != nil {
+			return Mcp{}, err
+		}
+		return mcp, nil
+	})
 }
 
 func (s *Store) GetMcp(ctx context.Context, id uuid.UUID) (Mcp, error) {
@@ -757,31 +832,46 @@ func (s *Store) UpdateMcp(ctx context.Context, id uuid.UUID, update McpUpdate) (
 	if builder.empty() {
 		return Mcp{}, fmt.Errorf("mcp update requires at least one field")
 	}
-	query, args := builder.build("mcps", mcpColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	mcp, err := scanMcp(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Mcp{}, NotFound("mcp")
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Mcp, error) {
+		query, args := builder.build("mcps", mcpColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		mcp, err := scanMcp(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Mcp{}, NotFound("mcp")
+			}
+			return Mcp{}, err
 		}
-		return Mcp{}, err
-	}
-	return mcp, nil
+		if err := touchAgentUpdatedAt(ctx, tx, mcp.AgentID); err != nil {
+			return Mcp{}, err
+		}
+		return mcp, nil
+	})
 }
 
 func (s *Store) DeleteMcp(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM mcps WHERE id = $1`, id)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return ForeignKeyViolation("mcp")
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM mcps WHERE id = $1 RETURNING %s`, mcpColumns),
+			id,
+		)
+		mcp, err := scanMcp(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("mcp")
+			}
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return struct{}{}, ForeignKeyViolation("mcp")
+			}
+			return struct{}{}, err
 		}
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("mcp")
-	}
-	return nil
+		if err := touchAgentUpdatedAt(ctx, tx, mcp.AgentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListMcps(ctx context.Context, filter McpFilter, pageSize int32, cursor *PageCursor) (McpListResult, error) {
@@ -807,24 +897,29 @@ func (s *Store) ListMcps(ctx context.Context, filter McpFilter, pageSize int32, 
 }
 
 func (s *Store) CreateSkill(ctx context.Context, input SkillInput) (Skill, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO skills (agent_id, name, body, description)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Skill, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO skills (agent_id, name, body, description)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING %s`, skillColumns),
-		input.AgentID,
-		input.Name,
-		input.Body,
-		input.Description,
-	)
-	skill, err := scanSkill(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return Skill{}, ForeignKeyViolation("skill")
+			input.AgentID,
+			input.Name,
+			input.Body,
+			input.Description,
+		)
+		skill, err := scanSkill(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return Skill{}, ForeignKeyViolation("skill")
+			}
+			return Skill{}, err
 		}
-		return Skill{}, err
-	}
-	return skill, nil
+		if err := touchAgentUpdatedAt(ctx, tx, skill.AgentID); err != nil {
+			return Skill{}, err
+		}
+		return skill, nil
+	})
 }
 
 func (s *Store) GetSkill(ctx context.Context, id uuid.UUID) (Skill, error) {
@@ -857,27 +952,42 @@ func (s *Store) UpdateSkill(ctx context.Context, id uuid.UUID, update SkillUpdat
 	if builder.empty() {
 		return Skill{}, fmt.Errorf("skill update requires at least one field")
 	}
-	query, args := builder.build("skills", skillColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	skill, err := scanSkill(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Skill{}, NotFound("skill")
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Skill, error) {
+		query, args := builder.build("skills", skillColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		skill, err := scanSkill(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Skill{}, NotFound("skill")
+			}
+			return Skill{}, err
 		}
-		return Skill{}, err
-	}
-	return skill, nil
+		if err := touchAgentUpdatedAt(ctx, tx, skill.AgentID); err != nil {
+			return Skill{}, err
+		}
+		return skill, nil
+	})
 }
 
 func (s *Store) DeleteSkill(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM skills WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("skill")
-	}
-	return nil
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM skills WHERE id = $1 RETURNING %s`, skillColumns),
+			id,
+		)
+		skill, err := scanSkill(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("skill")
+			}
+			return struct{}{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, skill.AgentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListSkills(ctx context.Context, filter SkillFilter, pageSize int32, cursor *PageCursor) (SkillListResult, error) {
@@ -903,29 +1013,34 @@ func (s *Store) ListSkills(ctx context.Context, filter SkillFilter, pageSize int
 }
 
 func (s *Store) CreateHook(ctx context.Context, input HookInput) (Hook, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO hooks (agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Hook, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO hooks (agent_id, event, "function", image, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, description)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 RETURNING %s`, hookColumns),
-		input.AgentID,
-		input.Event,
-		input.Function,
-		input.Image,
-		input.Resources.RequestsCPU,
-		input.Resources.RequestsMemory,
-		input.Resources.LimitsCPU,
-		input.Resources.LimitsMemory,
-		input.Description,
-	)
-	hook, err := scanHook(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return Hook{}, ForeignKeyViolation("hook")
+			input.AgentID,
+			input.Event,
+			input.Function,
+			input.Image,
+			input.Resources.RequestsCPU,
+			input.Resources.RequestsMemory,
+			input.Resources.LimitsCPU,
+			input.Resources.LimitsMemory,
+			input.Description,
+		)
+		hook, err := scanHook(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return Hook{}, ForeignKeyViolation("hook")
+			}
+			return Hook{}, err
 		}
-		return Hook{}, err
-	}
-	return hook, nil
+		if err := touchAgentUpdatedAt(ctx, tx, hook.AgentID); err != nil {
+			return Hook{}, err
+		}
+		return hook, nil
+	})
 }
 
 func (s *Store) GetHook(ctx context.Context, id uuid.UUID) (Hook, error) {
@@ -967,31 +1082,46 @@ func (s *Store) UpdateHook(ctx context.Context, id uuid.UUID, update HookUpdate)
 	if builder.empty() {
 		return Hook{}, fmt.Errorf("hook update requires at least one field")
 	}
-	query, args := builder.build("hooks", hookColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	hook, err := scanHook(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Hook{}, NotFound("hook")
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Hook, error) {
+		query, args := builder.build("hooks", hookColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		hook, err := scanHook(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Hook{}, NotFound("hook")
+			}
+			return Hook{}, err
 		}
-		return Hook{}, err
-	}
-	return hook, nil
+		if err := touchAgentUpdatedAt(ctx, tx, hook.AgentID); err != nil {
+			return Hook{}, err
+		}
+		return hook, nil
+	})
 }
 
 func (s *Store) DeleteHook(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM hooks WHERE id = $1`, id)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return ForeignKeyViolation("hook")
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM hooks WHERE id = $1 RETURNING %s`, hookColumns),
+			id,
+		)
+		hook, err := scanHook(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("hook")
+			}
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return struct{}{}, ForeignKeyViolation("hook")
+			}
+			return struct{}{}, err
 		}
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("hook")
-	}
-	return nil
+		if err := touchAgentUpdatedAt(ctx, tx, hook.AgentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListHooks(ctx context.Context, filter HookFilter, pageSize int32, cursor *PageCursor) (HookListResult, error) {
@@ -1017,27 +1147,36 @@ func (s *Store) ListHooks(ctx context.Context, filter HookFilter, pageSize int32
 }
 
 func (s *Store) CreateEnv(ctx context.Context, input EnvInput) (Env, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO envs (name, description, agent_id, mcp_id, hook_id, value, secret_id)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Env, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO envs (name, description, agent_id, mcp_id, hook_id, value, secret_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING %s`, envColumns),
-		input.Name,
-		input.Description,
-		input.AgentID,
-		input.McpID,
-		input.HookID,
-		input.Value,
-		input.SecretID,
-	)
-	env, err := scanEnv(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return Env{}, ForeignKeyViolation("env")
+			input.Name,
+			input.Description,
+			input.AgentID,
+			input.McpID,
+			input.HookID,
+			input.Value,
+			input.SecretID,
+		)
+		env, err := scanEnv(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return Env{}, ForeignKeyViolation("env")
+			}
+			return Env{}, err
 		}
-		return Env{}, err
-	}
-	return env, nil
+		agentID, err := resolveAgentID(ctx, tx, env.AgentID, env.McpID, env.HookID)
+		if err != nil {
+			return Env{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return Env{}, err
+		}
+		return env, nil
+	})
 }
 
 func (s *Store) GetEnv(ctx context.Context, id uuid.UUID) (Env, error) {
@@ -1075,27 +1214,50 @@ func (s *Store) UpdateEnv(ctx context.Context, id uuid.UUID, update EnvUpdate) (
 	if builder.empty() {
 		return Env{}, fmt.Errorf("env update requires at least one field")
 	}
-	query, args := builder.build("envs", envColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	env, err := scanEnv(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Env{}, NotFound("env")
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (Env, error) {
+		query, args := builder.build("envs", envColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		env, err := scanEnv(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Env{}, NotFound("env")
+			}
+			return Env{}, err
 		}
-		return Env{}, err
-	}
-	return env, nil
+		agentID, err := resolveAgentID(ctx, tx, env.AgentID, env.McpID, env.HookID)
+		if err != nil {
+			return Env{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return Env{}, err
+		}
+		return env, nil
+	})
 }
 
 func (s *Store) DeleteEnv(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM envs WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("env")
-	}
-	return nil
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM envs WHERE id = $1 RETURNING %s`, envColumns),
+			id,
+		)
+		env, err := scanEnv(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("env")
+			}
+			return struct{}{}, err
+		}
+		agentID, err := resolveAgentID(ctx, tx, env.AgentID, env.McpID, env.HookID)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListEnvs(ctx context.Context, filter EnvFilter, pageSize int32, cursor *PageCursor) (EnvListResult, error) {
@@ -1127,25 +1289,34 @@ func (s *Store) ListEnvs(ctx context.Context, filter EnvFilter, pageSize int32, 
 }
 
 func (s *Store) CreateInitScript(ctx context.Context, input InitScriptInput) (InitScript, error) {
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO init_scripts (script, description, agent_id, mcp_id, hook_id)
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (InitScript, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`INSERT INTO init_scripts (script, description, agent_id, mcp_id, hook_id)
 		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING %s`, initScriptColumns),
-		input.Script,
-		input.Description,
-		input.AgentID,
-		input.McpID,
-		input.HookID,
-	)
-	script, err := scanInitScript(row)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return InitScript{}, ForeignKeyViolation("init script")
+			input.Script,
+			input.Description,
+			input.AgentID,
+			input.McpID,
+			input.HookID,
+		)
+		script, err := scanInitScript(row)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+				return InitScript{}, ForeignKeyViolation("init script")
+			}
+			return InitScript{}, err
 		}
-		return InitScript{}, err
-	}
-	return script, nil
+		agentID, err := resolveAgentID(ctx, tx, script.AgentID, script.McpID, script.HookID)
+		if err != nil {
+			return InitScript{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return InitScript{}, err
+		}
+		return script, nil
+	})
 }
 
 func (s *Store) GetInitScript(ctx context.Context, id uuid.UUID) (InitScript, error) {
@@ -1175,27 +1346,50 @@ func (s *Store) UpdateInitScript(ctx context.Context, id uuid.UUID, update InitS
 	if builder.empty() {
 		return InitScript{}, fmt.Errorf("init script update requires at least one field")
 	}
-	query, args := builder.build("init_scripts", initScriptColumns, id)
-	row := s.pool.QueryRow(ctx, query, args...)
-	script, err := scanInitScript(row)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return InitScript{}, NotFound("init script")
+	return withTx(ctx, s.pool, func(tx pgx.Tx) (InitScript, error) {
+		query, args := builder.build("init_scripts", initScriptColumns, id)
+		row := tx.QueryRow(ctx, query, args...)
+		script, err := scanInitScript(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return InitScript{}, NotFound("init script")
+			}
+			return InitScript{}, err
 		}
-		return InitScript{}, err
-	}
-	return script, nil
+		agentID, err := resolveAgentID(ctx, tx, script.AgentID, script.McpID, script.HookID)
+		if err != nil {
+			return InitScript{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return InitScript{}, err
+		}
+		return script, nil
+	})
 }
 
 func (s *Store) DeleteInitScript(ctx context.Context, id uuid.UUID) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM init_scripts WHERE id = $1`, id)
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() == 0 {
-		return NotFound("init script")
-	}
-	return nil
+	_, err := withTx(ctx, s.pool, func(tx pgx.Tx) (struct{}, error) {
+		row := tx.QueryRow(ctx,
+			fmt.Sprintf(`DELETE FROM init_scripts WHERE id = $1 RETURNING %s`, initScriptColumns),
+			id,
+		)
+		script, err := scanInitScript(row)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return struct{}{}, NotFound("init script")
+			}
+			return struct{}{}, err
+		}
+		agentID, err := resolveAgentID(ctx, tx, script.AgentID, script.McpID, script.HookID)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if err := touchAgentUpdatedAt(ctx, tx, agentID); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (s *Store) ListInitScripts(ctx context.Context, filter InitScriptFilter, pageSize int32, cursor *PageCursor) (InitScriptListResult, error) {
