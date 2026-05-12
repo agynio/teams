@@ -21,7 +21,7 @@ import (
 
 const (
 	listPageSize  int32 = 50
-	testInitImage       = "ghcr.io/agynio/agent-init-codex:v1.0.0"
+	testInitImage       = "ghcr.io/agynio/agent-init-codex:0.13.24"
 )
 
 func TestAgentsServiceE2E(t *testing.T) {
@@ -84,11 +84,11 @@ func TestAgentsServiceE2E(t *testing.T) {
 		updatedAgentResp, err := client.UpdateAgent(ctx, &agentsv1.UpdateAgentRequest{
 			Id:        agentID1,
 			Name:      proto.String("Agent Alpha Updated " + testID),
-			InitImage: proto.String("ghcr.io/agynio/agent-init-codex:v1.0.1"),
+			InitImage: proto.String(testInitImage),
 		})
 		require.NoError(t, err)
 		require.Equal(t, "Agent Alpha Updated "+testID, updatedAgentResp.Agent.Name)
-		require.Equal(t, "ghcr.io/agynio/agent-init-codex:v1.0.1", updatedAgentResp.Agent.InitImage)
+		require.Equal(t, testInitImage, updatedAgentResp.Agent.InitImage)
 
 		listAgentsResp1, err := client.ListAgents(ctx, &agentsv1.ListAgentsRequest{OrganizationId: testOrganizationID, PageSize: 1})
 		require.NoError(t, err)
