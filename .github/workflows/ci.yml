@@ -28,11 +28,6 @@ jobs:
         run: |
           if [ -n "${AGYNIO_API_REF:-}" ]; then
             buf generate "https://github.com/agynio/api.git#${AGYNIO_API_REF}" --path proto/agynio/api/agents/v1 --path proto/agynio/api/authorization/v1 --path proto/agynio/api/identity/v1 --path proto/agynio/api/notifications/v1
-            mkdir -p .gen/go/agynio/api/agents/v1 .gen/go/agynio/api/authorization/v1 .gen/go/agynio/api/identity/v1 .gen/go/agynio/api/notifications/v1
-            mv .gen/go/proto/agynio/api/agents/v1/* .gen/go/agynio/api/agents/v1/
-            mv .gen/go/proto/agynio/api/authorization/v1/* .gen/go/agynio/api/authorization/v1/
-            mv .gen/go/proto/agynio/api/identity/v1/* .gen/go/agynio/api/identity/v1/
-            mv .gen/go/proto/agynio/api/notifications/v1/* .gen/go/agynio/api/notifications/v1/
           else
             buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
           fi
