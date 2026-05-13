@@ -36,12 +36,21 @@ func toProtoAgent(agent store.Agent) *agentsv1.Agent {
 		Image:          agent.Image,
 		InitImage:      agent.InitImage,
 		Capabilities:   append([]string(nil), agent.Capabilities...),
+		Availability:   agentAvailabilityToProto(agent.Availability),
 		Resources:      toProtoComputeResources(agent.Resources),
 	}
 	if agent.IdleTimeout != nil {
 		protoAgent.IdleTimeout = agent.IdleTimeout
 	}
 	return protoAgent
+}
+
+func toProtoAgentRoleAssignment(assignment store.AgentRoleAssignment) *agentsv1.AgentRoleAssignment {
+	return &agentsv1.AgentRoleAssignment{
+		AgentId:    assignment.AgentID.String(),
+		IdentityId: assignment.IdentityID.String(),
+		Role:       agentRoleToProto(assignment.Role),
+	}
 }
 
 func toProtoVolume(volume store.Volume) *agentsv1.Volume {

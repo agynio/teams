@@ -4,23 +4,44 @@ import (
 	"context"
 
 	authorizationv1 "github.com/agynio/agents/.gen/go/agynio/api/authorization/v1"
+	"github.com/agynio/agents/internal/store"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
 	identityPrefix     = "identity:"
 	organizationPrefix = "organization:"
-	memberRelation     = "member"
+	agentPrefix        = "agent:"
 )
 
 type AuthorizationWriter interface {
+	Check(ctx context.Context, req *authorizationv1.CheckRequest, opts ...grpc.CallOption) (*authorizationv1.CheckResponse, error)
 	Write(ctx context.Context, req *authorizationv1.WriteRequest, opts ...grpc.CallOption) (*authorizationv1.WriteResponse, error)
+}
+
+func (s *Server) requireOrganizationMember(ctx context.Context, identityID uuid.UUID, organizationID uuid.UUID) error {
+	response, err := s.authz.Check(ctx, &authorizationv1.CheckRequest{
+		TupleKey: &authorizationv1.TupleKey{
+			User:     identityPrefix + identityID.String(),
+			Relation: "member",
+			Object:   organizationPrefix + organizationID.String(),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if !response.GetAllowed() {
+		return status.Error(codes.InvalidArgument, "identity is not a member of the agent organization")
+	}
+	return nil
 }
 
 func (s *Server) addAgentMembership(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID) error {
 	return s.writeAuthorization(ctx,
-		[]*authorizationv1.TupleKey{authorizationTuple(agentID, organizationID)},
+		[]*authorizationv1.TupleKey{agentOrganizationTuple(agentID, organizationID)},
 		nil,
 	)
 }
@@ -28,8 +49,54 @@ func (s *Server) addAgentMembership(ctx context.Context, agentID uuid.UUID, orga
 func (s *Server) removeAgentMembership(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID) error {
 	return s.writeAuthorization(ctx,
 		nil,
-		[]*authorizationv1.TupleKey{authorizationTuple(agentID, organizationID)},
+		[]*authorizationv1.TupleKey{agentOrganizationTuple(agentID, organizationID)},
 	)
+}
+
+func (s *Server) addAgentAuthorization(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID, creatorID uuid.UUID, availability store.AgentAvailability) error {
+	writes := []*authorizationv1.TupleKey{
+		agentOrganizationTuple(agentID, organizationID),
+		agentRoleTuple(agentID, creatorID, store.AgentRoleOwner),
+	}
+	if availability == store.AgentAvailabilityInternal {
+		writes = append(writes, agentInternalAccessTuple(agentID, organizationID))
+	}
+	return s.writeAuthorization(ctx, writes, nil)
+}
+
+func (s *Server) removeAgentAuthorization(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID, roles []store.AgentRoleAssignment, availability store.AgentAvailability) error {
+	deletes := []*authorizationv1.TupleKey{agentOrganizationTuple(agentID, organizationID)}
+	if availability == store.AgentAvailabilityInternal {
+		deletes = append(deletes, agentInternalAccessTuple(agentID, organizationID))
+	}
+	for _, role := range roles {
+		deletes = append(deletes, agentRoleTuple(agentID, role.IdentityID, role.Role))
+	}
+	return s.writeAuthorization(ctx, nil, deletes)
+}
+
+func (s *Server) updateAgentAvailabilityAuthorization(ctx context.Context, agentID uuid.UUID, organizationID uuid.UUID, previous, next store.AgentAvailability) error {
+	if previous == next {
+		return nil
+	}
+	tuple := agentInternalAccessTuple(agentID, organizationID)
+	if next == store.AgentAvailabilityInternal {
+		return s.writeAuthorization(ctx, []*authorizationv1.TupleKey{tuple}, nil)
+	}
+	return s.writeAuthorization(ctx, nil, []*authorizationv1.TupleKey{tuple})
+}
+
+func (s *Server) updateAgentRoleAuthorization(ctx context.Context, agentID uuid.UUID, identityID uuid.UUID, previous *store.AgentRole, next store.AgentRole) error {
+	writes := []*authorizationv1.TupleKey{agentRoleTuple(agentID, identityID, next)}
+	var deletes []*authorizationv1.TupleKey
+	if previous != nil && *previous != next {
+		deletes = []*authorizationv1.TupleKey{agentRoleTuple(agentID, identityID, *previous)}
+	}
+	return s.writeAuthorization(ctx, writes, deletes)
+}
+
+func (s *Server) removeAgentRoleAuthorization(ctx context.Context, agentID uuid.UUID, identityID uuid.UUID, role store.AgentRole) error {
+	return s.writeAuthorization(ctx, nil, []*authorizationv1.TupleKey{agentRoleTuple(agentID, identityID, role)})
 }
 
 func (s *Server) writeAuthorization(ctx context.Context, writes []*authorizationv1.TupleKey, deletes []*authorizationv1.TupleKey) error {
@@ -40,10 +107,26 @@ func (s *Server) writeAuthorization(ctx context.Context, writes []*authorization
 	return err
 }
 
-func authorizationTuple(agentID uuid.UUID, organizationID uuid.UUID) *authorizationv1.TupleKey {
+func agentOrganizationTuple(agentID uuid.UUID, organizationID uuid.UUID) *authorizationv1.TupleKey {
 	return &authorizationv1.TupleKey{
-		User:     identityPrefix + agentID.String(),
-		Relation: memberRelation,
-		Object:   organizationPrefix + organizationID.String(),
+		User:     organizationPrefix + organizationID.String(),
+		Relation: "org",
+		Object:   agentPrefix + agentID.String(),
+	}
+}
+
+func agentInternalAccessTuple(agentID uuid.UUID, organizationID uuid.UUID) *authorizationv1.TupleKey {
+	return &authorizationv1.TupleKey{
+		User:     organizationPrefix + organizationID.String(),
+		Relation: "internal_access",
+		Object:   agentPrefix + agentID.String(),
+	}
+}
+
+func agentRoleTuple(agentID uuid.UUID, identityID uuid.UUID, role store.AgentRole) *authorizationv1.TupleKey {
+	return &authorizationv1.TupleKey{
+		User:     identityPrefix + identityID.String(),
+		Relation: string(role),
+		Object:   agentPrefix + agentID.String(),
 	}
 }

@@ -32,7 +32,29 @@ type Agent struct {
 	InitImage      string
 	IdleTimeout    *string
 	Capabilities   []string
+	Availability   AgentAvailability
 	Resources      ComputeResources
+}
+
+type AgentAvailability string
+
+const (
+	AgentAvailabilityInternal AgentAvailability = "internal"
+	AgentAvailabilityPrivate  AgentAvailability = "private"
+)
+
+type AgentRole string
+
+const (
+	AgentRoleOwner       AgentRole = "owner"
+	AgentRoleMaintainer  AgentRole = "maintainer"
+	AgentRoleParticipant AgentRole = "participant"
+)
+
+type AgentRoleAssignment struct {
+	AgentID    uuid.UUID
+	IdentityID uuid.UUID
+	Role       AgentRole
 }
 
 type Volume struct {
@@ -120,6 +142,7 @@ type AgentInput struct {
 	InitImage     string
 	IdleTimeout   *string
 	Capabilities  []string
+	Availability  AgentAvailability
 	Resources     ComputeResources
 }
 
@@ -134,6 +157,7 @@ type AgentUpdate struct {
 	InitImage     *string
 	IdleTimeout   *string
 	Capabilities  *[]string
+	Availability  *AgentAvailability
 	Resources     *ComputeResources
 }
 
