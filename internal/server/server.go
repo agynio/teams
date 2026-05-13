@@ -438,9 +438,20 @@ func (s *Server) SetAgentRole(ctx context.Context, req *agentsv1.SetAgentRoleReq
 		return nil, toStatusError(err)
 	}
 	if err := s.updateAgentRoleAuthorization(ctx, agent.Meta.ID, identityID, previousRole, role); err != nil {
+		if rollbackErr := s.restoreAgentRoleAssignment(ctx, previousRole, assignment); rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "authorization write failed: %v; rollback failed: %v", err, rollbackErr)
+		}
 		return nil, status.Errorf(codes.Internal, "authorization write failed: %v", err)
 	}
 	return &agentsv1.SetAgentRoleResponse{Assignment: toProtoAgentRoleAssignment(assignment)}, nil
+}
+
+func (s *Server) restoreAgentRoleAssignment(ctx context.Context, previousRole *store.AgentRole, next store.AgentRoleAssignment) error {
+	if previousRole != nil {
+		_, err := s.store.UpsertAgentRole(ctx, store.AgentRoleAssignment{AgentID: next.AgentID, IdentityID: next.IdentityID, Role: *previousRole})
+		return err
+	}
+	return s.store.DeleteAgentRoleIfExists(ctx, next.AgentID, next.IdentityID)
 }
 
 func (s *Server) RemoveAgentRole(ctx context.Context, req *agentsv1.RemoveAgentRoleRequest) (*agentsv1.RemoveAgentRoleResponse, error) {
@@ -457,6 +468,9 @@ func (s *Server) RemoveAgentRole(ctx context.Context, req *agentsv1.RemoveAgentR
 		return nil, toStatusError(err)
 	}
 	if err := s.removeAgentRoleAuthorization(ctx, agentID, identityID, assignment.Role); err != nil {
+		if _, rollbackErr := s.store.UpsertAgentRole(ctx, assignment); rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "authorization delete failed: %v; rollback failed: %v", err, rollbackErr)
+		}
 		return nil, status.Errorf(codes.Internal, "authorization delete failed: %v", err)
 	}
 	return &agentsv1.RemoveAgentRoleResponse{}, nil

@@ -436,6 +436,19 @@ func (s *Store) UpsertAgentRole(ctx context.Context, assignment AgentRoleAssignm
 }
 
 func (s *Store) DeleteAgentRole(ctx context.Context, agentID, identityID uuid.UUID) (AgentRoleAssignment, error) {
+	return s.deleteAgentRole(ctx, agentID, identityID)
+}
+
+func (s *Store) DeleteAgentRoleIfExists(ctx context.Context, agentID, identityID uuid.UUID) error {
+	_, err := s.deleteAgentRole(ctx, agentID, identityID)
+	var notFound *NotFoundError
+	if errors.As(err, &notFound) {
+		return nil
+	}
+	return err
+}
+
+func (s *Store) deleteAgentRole(ctx context.Context, agentID, identityID uuid.UUID) (AgentRoleAssignment, error) {
 	row := s.pool.QueryRow(ctx,
 		`DELETE FROM agent_roles WHERE agent_id = $1 AND identity_id = $2 RETURNING agent_id, identity_id, role`,
 		agentID,
