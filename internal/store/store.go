@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	agentColumns                     = `id, organization_id, name, nickname, role, model, description, configuration, image, init_image, idle_timeout, capabilities, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, created_at, updated_at`
+	agentColumns                     = `id, organization_id, name, nickname, role, model, description, configuration, image, init_image, idle_timeout, capabilities, availability, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory, created_at, updated_at`
 	volumeColumns                    = `id, organization_id, persistent, mount_path, size, description, ttl, created_at, updated_at`
 	volumeAttachmentColumns          = `id, volume_id, agent_id, mcp_id, hook_id, created_at, updated_at`
 	imagePullSecretAttachmentColumns = `id, image_pull_secret_id, agent_id, mcp_id, hook_id, created_at, updated_at`
@@ -91,6 +91,7 @@ func scanAgent(row pgx.Row) (Agent, error) {
 		&agent.InitImage,
 		&idleTimeout,
 		&capabilities,
+		&agent.Availability,
 		&agent.Resources.RequestsCPU,
 		&agent.Resources.RequestsMemory,
 		&agent.Resources.LimitsCPU,
@@ -283,14 +284,40 @@ func scanInitScript(row pgx.Row) (InitScript, error) {
 	return script, nil
 }
 
+func scanAgentRoleAssignment(row pgx.Row) (AgentRoleAssignment, error) {
+	var assignment AgentRoleAssignment
+	if err := row.Scan(&assignment.AgentID, &assignment.IdentityID, &assignment.Role); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AgentRoleAssignment{}, NotFound("agent role")
+		}
+		return AgentRoleAssignment{}, err
+	}
+	return assignment, nil
+}
+
+func scanAgentRoleAssignments(rows pgx.Rows) ([]AgentRoleAssignment, error) {
+	assignments := []AgentRoleAssignment{}
+	for rows.Next() {
+		assignment, err := scanAgentRoleAssignment(rows)
+		if err != nil {
+			return nil, err
+		}
+		assignments = append(assignments, assignment)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return assignments, nil
+}
+
 func (s *Store) CreateAgent(ctx context.Context, organizationID uuid.UUID, input AgentInput) (Agent, error) {
 	capabilitiesJSON, err := encodeCapabilities(input.Capabilities)
 	if err != nil {
 		return Agent{}, err
 	}
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO agents (organization_id, name, nickname, role, model, description, configuration, image, init_image, idle_timeout, capabilities, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		fmt.Sprintf(`INSERT INTO agents (organization_id, name, nickname, role, model, description, configuration, image, init_image, idle_timeout, capabilities, availability, resources_requests_cpu, resources_requests_memory, resources_limits_cpu, resources_limits_memory)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		 RETURNING %s`, agentColumns),
 		organizationID,
 		input.Name,
@@ -303,6 +330,7 @@ func (s *Store) CreateAgent(ctx context.Context, organizationID uuid.UUID, input
 		input.InitImage,
 		input.IdleTimeout,
 		capabilitiesJSON,
+		input.Availability,
 		input.Resources.RequestsCPU,
 		input.Resources.RequestsMemory,
 		input.Resources.LimitsCPU,
@@ -366,6 +394,9 @@ func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdat
 		}
 		builder.add("capabilities", capabilitiesJSON)
 	}
+	if update.Availability != nil {
+		builder.add("availability", *update.Availability)
+	}
 	if update.Resources != nil {
 		builder.add("resources_requests_cpu", update.Resources.RequestsCPU)
 		builder.add("resources_requests_memory", update.Resources.RequestsMemory)
@@ -386,6 +417,79 @@ func (s *Store) UpdateAgent(ctx context.Context, id uuid.UUID, update AgentUpdat
 		return Agent{}, err
 	}
 	return agent, nil
+}
+
+func (s *Store) UpsertAgentRole(ctx context.Context, assignment AgentRoleAssignment) (AgentRoleAssignment, error) {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO agent_roles (agent_id, identity_id, role)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (agent_id, identity_id)
+		 DO UPDATE SET role = EXCLUDED.role, updated_at = NOW()`,
+		assignment.AgentID,
+		assignment.IdentityID,
+		assignment.Role,
+	)
+	if err != nil {
+		return AgentRoleAssignment{}, err
+	}
+	return assignment, nil
+}
+
+func (s *Store) DeleteAgentRole(ctx context.Context, agentID, identityID uuid.UUID) (AgentRoleAssignment, error) {
+	return s.deleteAgentRole(ctx, agentID, identityID)
+}
+
+func (s *Store) DeleteAgentRoleIfExists(ctx context.Context, agentID, identityID uuid.UUID) error {
+	_, err := s.deleteAgentRole(ctx, agentID, identityID)
+	var notFound *NotFoundError
+	if errors.As(err, &notFound) {
+		return nil
+	}
+	return err
+}
+
+func (s *Store) deleteAgentRole(ctx context.Context, agentID, identityID uuid.UUID) (AgentRoleAssignment, error) {
+	row := s.pool.QueryRow(ctx,
+		`DELETE FROM agent_roles WHERE agent_id = $1 AND identity_id = $2 RETURNING agent_id, identity_id, role`,
+		agentID,
+		identityID,
+	)
+	return scanAgentRoleAssignment(row)
+}
+
+func (s *Store) GetAgentRole(ctx context.Context, agentID, identityID uuid.UUID) (AgentRoleAssignment, error) {
+	row := s.pool.QueryRow(ctx,
+		`SELECT agent_id, identity_id, role FROM agent_roles WHERE agent_id = $1 AND identity_id = $2`,
+		agentID,
+		identityID,
+	)
+	return scanAgentRoleAssignment(row)
+}
+
+func (s *Store) ListAgentRoles(ctx context.Context, agentID uuid.UUID) ([]AgentRoleAssignment, error) {
+	rows, err := s.pool.Query(ctx, `SELECT agent_id, identity_id, role FROM agent_roles WHERE agent_id = $1 ORDER BY identity_id ASC`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentRoleAssignments(rows)
+}
+
+func (s *Store) ListIdentityAgentRoles(ctx context.Context, organizationID, identityID uuid.UUID) ([]AgentRoleAssignment, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT ar.agent_id, ar.identity_id, ar.role
+		 FROM agent_roles ar
+		 JOIN agents a ON a.id = ar.agent_id
+		 WHERE a.organization_id = $1 AND ar.identity_id = $2
+		 ORDER BY ar.agent_id ASC`,
+		organizationID,
+		identityID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentRoleAssignments(rows)
 }
 
 func (s *Store) DeleteAgent(ctx context.Context, id uuid.UUID) error {

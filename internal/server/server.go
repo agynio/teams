@@ -8,6 +8,7 @@ import (
 	"time"
 
 	agentsv1 "github.com/agynio/agents/.gen/go/agynio/api/agents/v1"
+	authorizationv1 "github.com/agynio/agents/.gen/go/agynio/api/authorization/v1"
 	identityv1 "github.com/agynio/agents/.gen/go/agynio/api/identity/v1"
 	notificationsv1 "github.com/agynio/agents/.gen/go/agynio/api/notifications/v1"
 	"github.com/agynio/agents/internal/store"
@@ -113,6 +114,18 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 	if req.GetInitImage() == "" {
 		return nil, status.Error(codes.InvalidArgument, "init_image is required")
 	}
+	creatorIDValue, err := identityIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	creatorID, err := parseUUID(creatorIDValue)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "identity_id: %v", err)
+	}
+	availability, err := agentAvailabilityFromProto(req.GetAvailability())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "availability: %v", err)
+	}
 	idleTimeout := defaultIdleTimeout
 	if req.IdleTimeout != nil {
 		idleTimeout = req.GetIdleTimeout()
@@ -133,12 +146,21 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 		InitImage:     req.GetInitImage(),
 		IdleTimeout:   &idleTimeout,
 		Capabilities:  append([]string(nil), req.GetCapabilities()...),
+		Availability:  availability,
 		Resources:     resources,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	if err := s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID); err != nil {
+	creatorRole := store.AgentRoleAssignment{AgentID: agent.Meta.ID, IdentityID: creatorID, Role: store.AgentRoleOwner}
+	if _, err := s.store.UpsertAgentRole(ctx, creatorRole); err != nil {
+		rollbackErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
+		if rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "store role failed: %v; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, status.Errorf(codes.Internal, "store role failed: %v", err)
+	}
+	if err := s.addAgentAuthorization(ctx, agent.Meta.ID, agent.OrganizationID, creatorID, availability); err != nil {
 		rollbackErr := s.store.DeleteAgent(ctx, agent.Meta.ID)
 		if rollbackErr != nil {
 			return nil, status.Errorf(codes.Internal, "authorization write failed: %v; rollback failed: %v", err, rollbackErr)
@@ -147,7 +169,7 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 	}
 	if err := s.registerAgentIdentity(ctx, agent.Meta.ID); err != nil {
 		rollbackErr := errors.Join(
-			s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID),
+			s.removeAgentAuthorization(ctx, agent.Meta.ID, agent.OrganizationID, []store.AgentRoleAssignment{creatorRole}, availability),
 			s.store.DeleteAgent(ctx, agent.Meta.ID),
 		)
 		if rollbackErr != nil {
@@ -164,7 +186,7 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 			}
 			rollbackErr := errors.Join(
 				cleanupErr,
-				s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID),
+				s.removeAgentAuthorization(ctx, agent.Meta.ID, agent.OrganizationID, []store.AgentRoleAssignment{creatorRole}, availability),
 				s.store.DeleteAgent(ctx, agent.Meta.ID),
 			)
 			if rollbackErr != nil {
@@ -213,7 +235,8 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 	// slice indicates the caller did not set capabilities; when provided, the
 	// list replaces existing capabilities.
 	capabilitiesProvided := req.Capabilities != nil
-	if req.Name == nil && req.Nickname == nil && req.Role == nil && req.Model == nil && req.Description == nil && req.Configuration == nil && req.Image == nil && req.InitImage == nil && req.IdleTimeout == nil && req.Resources == nil && !capabilitiesProvided {
+	availabilityProvided := req.Availability != nil
+	if req.Name == nil && req.Nickname == nil && req.Role == nil && req.Model == nil && req.Description == nil && req.Configuration == nil && req.Image == nil && req.InitImage == nil && req.IdleTimeout == nil && req.Resources == nil && !capabilitiesProvided && !availabilityProvided {
 		return nil, status.Error(codes.InvalidArgument, "at least one field must be provided")
 	}
 	if req.InitImage != nil && req.GetInitImage() == "" {
@@ -224,11 +247,13 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 	var previousAgent store.Agent
 	var nicknameValue string
 	var nicknameUpdateNeeded bool
-	if nicknameProvided {
+	if nicknameProvided || availabilityProvided {
 		previousAgent, err = s.store.GetAgent(ctx, id)
 		if err != nil {
 			return nil, toStatusError(err)
 		}
+	}
+	if nicknameProvided {
 		nicknameValue = req.GetNickname()
 		nicknameUpdateNeeded = nicknameValue != previousAgent.Nickname
 	}
@@ -280,6 +305,13 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 		value := append([]string(nil), req.GetCapabilities()...)
 		update.Capabilities = &value
 	}
+	if availabilityProvided {
+		value, err := agentAvailabilityFromProto(req.GetAvailability())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "availability: %v", err)
+		}
+		update.Availability = &value
+	}
 	if req.Resources != nil {
 		resources := toStoreComputeResources(req.GetResources())
 		update.Resources = &resources
@@ -305,6 +337,15 @@ func (s *Server) UpdateAgent(ctx context.Context, req *agentsv1.UpdateAgentReque
 			return nil, status.Errorf(codes.Internal, "update nickname: %v", nicknameErr)
 		}
 	}
+	if availabilityProvided {
+		if err := s.updateAgentAvailabilityAuthorization(ctx, agent.Meta.ID, agent.OrganizationID, previousAgent.Availability, agent.Availability); err != nil {
+			_, rollbackErr := s.store.UpdateAgent(ctx, id, store.AgentUpdate{Availability: &previousAgent.Availability})
+			if rollbackErr != nil {
+				return nil, status.Errorf(codes.Internal, "update availability authorization: %v; rollback: %v", err, rollbackErr)
+			}
+			return nil, status.Errorf(codes.Internal, "update availability authorization: %v", err)
+		}
+	}
 	s.publishAgentUpdated(ctx, agent.Meta.ID, agent.OrganizationID)
 	return &agentsv1.UpdateAgentResponse{Agent: toProtoAgent(agent)}, nil
 }
@@ -318,13 +359,17 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 	if err != nil {
 		return nil, toStatusError(err)
 	}
-	if err := s.removeAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID); err != nil {
+	roles, err := s.store.ListAgentRoles(ctx, agent.Meta.ID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.removeAgentAuthorization(ctx, agent.Meta.ID, agent.OrganizationID, roles, agent.Availability); err != nil {
 		return nil, status.Errorf(codes.Internal, "authorization delete failed: %v", err)
 	}
 	removedNickname := false
 	if agent.Nickname != "" {
 		if err := s.removeAgentNickname(ctx, agent.Meta.ID, agent.OrganizationID); err != nil {
-			rollbackErr := s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
+			rollbackErr := s.restoreAgentAuthorization(ctx, agent, roles)
 			if rollbackErr != nil {
 				return nil, status.Errorf(codes.Internal, "remove nickname: %v; rollback: %v", err, rollbackErr)
 			}
@@ -333,7 +378,7 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 		removedNickname = true
 	}
 	if err := s.store.DeleteAgent(ctx, id); err != nil {
-		rollbackErr := s.addAgentMembership(ctx, agent.Meta.ID, agent.OrganizationID)
+		rollbackErr := s.restoreAgentAuthorization(ctx, agent, roles)
 		if removedNickname {
 			rollbackErr = errors.Join(rollbackErr, s.setAgentNickname(ctx, agent.Meta.ID, agent.OrganizationID, agent.Nickname))
 		}
@@ -344,6 +389,131 @@ func (s *Server) DeleteAgent(ctx context.Context, req *agentsv1.DeleteAgentReque
 	}
 	s.publishAgentUpdated(ctx, agent.Meta.ID, agent.OrganizationID)
 	return &agentsv1.DeleteAgentResponse{}, nil
+}
+
+func (s *Server) restoreAgentAuthorization(ctx context.Context, agent store.Agent, roles []store.AgentRoleAssignment) error {
+	writes := []*authorizationv1.TupleKey{agentOrganizationTuple(agent.Meta.ID, agent.OrganizationID)}
+	if agent.Availability == store.AgentAvailabilityInternal {
+		writes = append(writes, agentInternalAccessTuple(agent.Meta.ID, agent.OrganizationID))
+	}
+	for _, role := range roles {
+		writes = append(writes, agentRoleTuple(agent.Meta.ID, role.IdentityID, role.Role))
+	}
+	return s.writeAuthorization(ctx, writes, nil)
+}
+
+func (s *Server) SetAgentRole(ctx context.Context, req *agentsv1.SetAgentRoleRequest) (*agentsv1.SetAgentRoleResponse, error) {
+	agentID, err := parseUUID(req.GetAgentId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
+	}
+	identityID, err := parseUUID(req.GetIdentityId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "identity_id: %v", err)
+	}
+	role, err := agentRoleFromProto(req.GetRole())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "role: %v", err)
+	}
+	agent, err := s.store.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.requireOrganizationMember(ctx, identityID, agent.OrganizationID); err != nil {
+		return nil, status.Errorf(status.Code(err), "organization membership check failed: %v", err)
+	}
+	previousAssignment, err := s.store.GetAgentRole(ctx, agentID, identityID)
+	var previousRole *store.AgentRole
+	if err != nil {
+		var notFound *store.NotFoundError
+		if !errors.As(err, &notFound) {
+			return nil, toStatusError(err)
+		}
+	} else {
+		previousRole = &previousAssignment.Role
+	}
+	assignment := store.AgentRoleAssignment{AgentID: agentID, IdentityID: identityID, Role: role}
+	assignment, err = s.store.UpsertAgentRole(ctx, assignment)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.updateAgentRoleAuthorization(ctx, agent.Meta.ID, identityID, previousRole, role); err != nil {
+		if rollbackErr := s.restoreAgentRoleAssignment(ctx, previousRole, assignment); rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "authorization write failed: %v; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, status.Errorf(codes.Internal, "authorization write failed: %v", err)
+	}
+	return &agentsv1.SetAgentRoleResponse{Assignment: toProtoAgentRoleAssignment(assignment)}, nil
+}
+
+func (s *Server) restoreAgentRoleAssignment(ctx context.Context, previousRole *store.AgentRole, next store.AgentRoleAssignment) error {
+	if previousRole != nil {
+		_, err := s.store.UpsertAgentRole(ctx, store.AgentRoleAssignment{AgentID: next.AgentID, IdentityID: next.IdentityID, Role: *previousRole})
+		return err
+	}
+	return s.store.DeleteAgentRoleIfExists(ctx, next.AgentID, next.IdentityID)
+}
+
+func (s *Server) RemoveAgentRole(ctx context.Context, req *agentsv1.RemoveAgentRoleRequest) (*agentsv1.RemoveAgentRoleResponse, error) {
+	agentID, err := parseUUID(req.GetAgentId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
+	}
+	identityID, err := parseUUID(req.GetIdentityId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "identity_id: %v", err)
+	}
+	assignment, err := s.store.DeleteAgentRole(ctx, agentID, identityID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	if err := s.removeAgentRoleAuthorization(ctx, agentID, identityID, assignment.Role); err != nil {
+		if _, rollbackErr := s.store.UpsertAgentRole(ctx, assignment); rollbackErr != nil {
+			return nil, status.Errorf(codes.Internal, "authorization delete failed: %v; rollback failed: %v", err, rollbackErr)
+		}
+		return nil, status.Errorf(codes.Internal, "authorization delete failed: %v", err)
+	}
+	return &agentsv1.RemoveAgentRoleResponse{}, nil
+}
+
+func (s *Server) ListAgentRoles(ctx context.Context, req *agentsv1.ListAgentRolesRequest) (*agentsv1.ListAgentRolesResponse, error) {
+	agentID, err := parseUUID(req.GetAgentId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "agent_id: %v", err)
+	}
+	assignments, err := s.store.ListAgentRoles(ctx, agentID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	response := &agentsv1.ListAgentRolesResponse{Assignments: make([]*agentsv1.AgentRoleAssignment, len(assignments))}
+	for i, assignment := range assignments {
+		response.Assignments[i] = toProtoAgentRoleAssignment(assignment)
+	}
+	return response, nil
+}
+
+func (s *Server) ListMyAgentRoles(ctx context.Context, req *agentsv1.ListMyAgentRolesRequest) (*agentsv1.ListMyAgentRolesResponse, error) {
+	organizationID, err := parseUUID(req.GetOrganizationId())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "organization_id: %v", err)
+	}
+	identityIDValue, err := identityIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identityID, err := parseUUID(identityIDValue)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "identity_id: %v", err)
+	}
+	assignments, err := s.store.ListIdentityAgentRoles(ctx, organizationID, identityID)
+	if err != nil {
+		return nil, toStatusError(err)
+	}
+	response := &agentsv1.ListMyAgentRolesResponse{Assignments: make([]*agentsv1.AgentRoleAssignment, len(assignments))}
+	for i, assignment := range assignments {
+		response.Assignments[i] = toProtoAgentRoleAssignment(assignment)
+	}
+	return response, nil
 }
 
 func (s *Server) ListAgents(ctx context.Context, req *agentsv1.ListAgentsRequest) (*agentsv1.ListAgentsResponse, error) {
@@ -1400,6 +1570,58 @@ func toStoreComputeResources(resources *agentsv1.ComputeResources) store.Compute
 		RequestsMemory: resources.GetRequestsMemory(),
 		LimitsCPU:      resources.GetLimitsCpu(),
 		LimitsMemory:   resources.GetLimitsMemory(),
+	}
+}
+
+func agentAvailabilityFromProto(availability agentsv1.AgentAvailability) (store.AgentAvailability, error) {
+	switch availability {
+	case agentsv1.AgentAvailability_AGENT_AVAILABILITY_INTERNAL:
+		return store.AgentAvailabilityInternal, nil
+	case agentsv1.AgentAvailability_AGENT_AVAILABILITY_PRIVATE:
+		return store.AgentAvailabilityPrivate, nil
+	case agentsv1.AgentAvailability_AGENT_AVAILABILITY_UNSPECIFIED:
+		return "", fmt.Errorf("must be internal or private")
+	default:
+		return "", fmt.Errorf("unknown value %d", availability)
+	}
+}
+
+func agentAvailabilityToProto(availability store.AgentAvailability) agentsv1.AgentAvailability {
+	switch availability {
+	case store.AgentAvailabilityInternal:
+		return agentsv1.AgentAvailability_AGENT_AVAILABILITY_INTERNAL
+	case store.AgentAvailabilityPrivate:
+		return agentsv1.AgentAvailability_AGENT_AVAILABILITY_PRIVATE
+	default:
+		panic(fmt.Sprintf("unknown agent availability %q", availability))
+	}
+}
+
+func agentRoleFromProto(role agentsv1.AgentRole) (store.AgentRole, error) {
+	switch role {
+	case agentsv1.AgentRole_AGENT_ROLE_OWNER:
+		return store.AgentRoleOwner, nil
+	case agentsv1.AgentRole_AGENT_ROLE_MAINTAINER:
+		return store.AgentRoleMaintainer, nil
+	case agentsv1.AgentRole_AGENT_ROLE_PARTICIPANT:
+		return store.AgentRoleParticipant, nil
+	case agentsv1.AgentRole_AGENT_ROLE_UNSPECIFIED:
+		return "", fmt.Errorf("must be owner, maintainer, or participant")
+	default:
+		return "", fmt.Errorf("unknown value %d", role)
+	}
+}
+
+func agentRoleToProto(role store.AgentRole) agentsv1.AgentRole {
+	switch role {
+	case store.AgentRoleOwner:
+		return agentsv1.AgentRole_AGENT_ROLE_OWNER
+	case store.AgentRoleMaintainer:
+		return agentsv1.AgentRole_AGENT_ROLE_MAINTAINER
+	case store.AgentRoleParticipant:
+		return agentsv1.AgentRole_AGENT_ROLE_PARTICIPANT
+	default:
+		panic(fmt.Sprintf("unknown agent role %q", role))
 	}
 }
 

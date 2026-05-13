@@ -25,7 +25,14 @@ jobs:
           version: 1.66.0
 
       - name: Generate protobuf bindings
-        run: buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
+        run: |
+          if [ -n "${AGYNIO_API_REF:-}" ]; then
+            buf generate "https://github.com/agynio/api.git#${AGYNIO_API_REF}" --path proto/agynio/api/agents/v1 --path proto/agynio/api/authorization/v1 --path proto/agynio/api/identity/v1 --path proto/agynio/api/notifications/v1
+          else
+            buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
+          fi
+        env:
+          AGYNIO_API_REF: branch=noa/issue-51-agent-availability
 
       - name: Run tests
         run: go test ./...
