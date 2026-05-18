@@ -2,7 +2,8 @@ version: v2beta1
 
 vars:
   AGENTS_NAMESPACE: platform
-  E2E_IMAGE: ghcr.io/agynio/devcontainer-go:1
+  DEV_IMAGE: ghcr.io/agynio/devcontainer-go:1
+  POSTGRES_IMAGE: postgres:16.6-alpine
 
 functions:
   disable_argocd_sync: |-
@@ -78,20 +79,134 @@ functions:
     )"
 
 deployments:
-  e2e-runner:
+  agents-db:
     namespace: ${AGENTS_NAMESPACE}
     helm:
       chart:
         name: component-chart
         repo: https://charts.devspace.sh
       values:
-        containers:
-          - image: ${E2E_IMAGE}
-            env:
-              - name: AGENTS_ADDR
-                value: "agents:50051"
         labels:
-          app.kubernetes.io/name: agents-e2e
+          app.kubernetes.io/name: agents-db
+          app.kubernetes.io/instance: agents-db
+        containers:
+          - name: agents-db
+            image: ${POSTGRES_IMAGE}
+            env:
+              - name: POSTGRES_DB
+                value: agents
+              - name: POSTGRES_USER
+                value: agents
+              - name: POSTGRES_PASSWORD
+                value: agents
+              - name: PGDATA
+                value: /var/lib/postgresql/data/pgdata
+            ports:
+              - name: postgres
+                containerPort: 5432
+            readinessProbe:
+              exec:
+                command:
+                  - pg_isready
+                  - -U
+                  - agents
+                  - -d
+                  - agents
+              initialDelaySeconds: 5
+              periodSeconds: 5
+              timeoutSeconds: 5
+              failureThreshold: 6
+            livenessProbe:
+              exec:
+                command:
+                  - pg_isready
+                  - -U
+                  - agents
+                  - -d
+                  - agents
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 6
+            volumeMounts:
+              - containerPath: /var/lib/postgresql/data
+                volume:
+                  name: data
+        service:
+          ports:
+            - name: postgres
+              port: 5432
+              containerPort: 5432
+        volumes:
+          - name: data
+            emptyDir: {}
+  agents:
+    namespace: ${AGENTS_NAMESPACE}
+    helm:
+      chart:
+        name: component-chart
+        repo: https://charts.devspace.sh
+      values:
+        labels:
+          app.kubernetes.io/name: agents
+          app.kubernetes.io/instance: agents
+        containers:
+          - name: agents
+            image: ${DEV_IMAGE}
+            workingDir: /opt/app/data
+            command:
+              - sh
+              - -c
+              - |
+                set -eu
+                elapsed=0
+                while [ ! -f /opt/app/data/go.mod ]; do
+                  sleep 1; elapsed=$((elapsed + 1))
+                  [ "$elapsed" -ge 120 ] && { echo "ERROR: sync timeout" >&2; exit 1; }
+                done
+                buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
+                exec go run ./cmd/agents-service
+            env:
+              - name: GRPC_ADDRESS
+                value: ":50051"
+              - name: DATABASE_URL
+                value: postgresql://agents:agents@agents-db:5432/agents?sslmode=disable
+              - name: AUTHORIZATION_SERVICE_ADDRESS
+                value: authorization:50051
+              - name: IDENTITY_SERVICE_ADDRESS
+                value: identity:50051
+              - name: NOTIFICATIONS_SERVICE_ADDRESS
+                value: notifications:50051
+            ports:
+              - name: grpc
+                containerPort: 50051
+            volumeMounts:
+              - containerPath: /opt/app/data
+                volume:
+                  name: data
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+              runAsGroup: 1000
+              readOnlyRootFilesystem: false
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
+              seccompProfile:
+                type: RuntimeDefault
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+        service:
+          ports:
+            - name: grpc
+              port: 50051
+              containerPort: 50051
+        volumes:
+          - name: data
+            emptyDir: {}
 
 pipelines:
   dev:
@@ -101,7 +216,9 @@ pipelines:
         description: "Keep DevSpace running and stream logs"
     run: |-
       disable_argocd_sync
-      patch_deployment
+      create_deployments agents-db
+      kubectl rollout status deployment/agents-db -n ${AGENTS_NAMESPACE} --timeout=120s
+      create_deployments agents
       if [ "$(get_flag "watch")" == "true" ]; then
         start_dev --disable-pod-replace agents
       else
@@ -153,6 +270,8 @@ dev:
               - .devspace/
               - /.gen/
               - /tmp/
+              - /e2e/
+              - /bootstrap/
             downloadExcludePaths:
               - .git/
               - .devspace/
