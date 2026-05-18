@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,16 +29,29 @@ jobs:
 
       - name: Generate protobuf bindings
         run: |
-          if [ -n "${AGYNIO_API_REF:-}" ]; then
-            buf generate "https://github.com/agynio/api.git#${AGYNIO_API_REF}" --path proto/agynio/api/agents/v1 --path proto/agynio/api/authorization/v1 --path proto/agynio/api/identity/v1 --path proto/agynio/api/notifications/v1
-          else
-            buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
-          fi
-        env:
-          AGYNIO_API_REF: branch=noa/issue-51-agent-availability
+          buf generate buf.build/agynio/api \
+            --include-imports \
+            --path agynio/api/agents/v1 \
+            --path agynio/api/authorization/v1 \
+            --path agynio/api/identity/v1 \
+            --path agynio/api/notifications/v1
 
       - name: Run tests
         run: go test ./...
 
       - name: Build
         run: go build ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: agynio/bootstrap/.github/actions/provision@main
+      - name: Deploy agents from source
+        run: devspace dev
+      - uses: agynio/e2e/.github/actions/run-tests@main
+        with:
+          service: agents
