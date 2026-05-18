@@ -50,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: agynio/bootstrap/.github/actions/provision@main
+      - name: Setup DevSpace
+        uses: agynio/e2e/.github/actions/setup-devspace@main
       - name: Deploy agents from source
         run: devspace dev
       - uses: agynio/e2e/.github/actions/run-tests@main
