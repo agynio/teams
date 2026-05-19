@@ -16,6 +16,10 @@ functions:
       echo "WARNING: ArgoCD Application 'agents' not found in argocd namespace."
     fi
   restore_argocd_sync: &restore_argocd_sync |-
+    if [ -n "${CI:-}" ]; then
+      echo "Skipping ArgoCD auto-sync restore in CI."
+      exit 0
+    fi
     if kubectl get application agents -n argocd >/dev/null 2>&1; then
       echo "Re-enabling ArgoCD auto-sync for agents..."
       kubectl patch application agents -n argocd \
@@ -27,7 +31,7 @@ functions:
     fi
   patch_deployment: |-
     echo "Patching agents deployment for DevSpace..."
-    kubectl patch deployment agents-agents -n ${AGENTS_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
+    kubectl patch deployment agents -n ${AGENTS_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
     spec:
       template:
         spec:
@@ -40,7 +44,7 @@ functions:
               emptyDir: {}
           containers:
             - name: agents
-              image: ghcr.io/agynio/devcontainer-go:1 # keep in sync with E2E_IMAGE
+              image: ghcr.io/agynio/devcontainer-go:1 # keep in sync with DEV_IMAGE
               workingDir: /opt/app/data
               command:
                 - sh
@@ -77,75 +81,6 @@ functions:
     EOF
     )"
 
-deployments:
-  agents:
-    namespace: ${AGENTS_NAMESPACE}
-    helm:
-      chart:
-        name: component-chart
-        repo: https://charts.devspace.sh
-      values:
-        labels:
-          app.kubernetes.io/name: agents
-          app.kubernetes.io/instance: agents
-        containers:
-          - name: agents
-            image: ${DEV_IMAGE}
-            workingDir: /opt/app/data
-            command:
-              - sh
-              - -c
-              - |
-                set -eu
-                elapsed=0
-                while [ ! -f /opt/app/data/go.mod ]; do
-                  sleep 1; elapsed=$((elapsed + 1))
-                  [ "$elapsed" -ge 120 ] && { echo "ERROR: sync timeout" >&2; exit 1; }
-                done
-                buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1
-                exec go run ./cmd/agents-service
-            env:
-              - name: GRPC_ADDRESS
-                value: ":50051"
-              - name: DATABASE_URL
-                value: postgresql://agents:agents@agents-db:5432/agents?sslmode=disable
-              - name: AUTHORIZATION_SERVICE_ADDRESS
-                value: authorization:50051
-              - name: IDENTITY_SERVICE_ADDRESS
-                value: identity:50051
-              - name: NOTIFICATIONS_SERVICE_ADDRESS
-                value: notifications:50051
-            ports:
-              - name: grpc
-                containerPort: 50051
-            volumeMounts:
-              - containerPath: /opt/app/data
-                volume:
-                  name: data
-            securityContext:
-              runAsNonRoot: true
-              runAsUser: 1000
-              runAsGroup: 1000
-              readOnlyRootFilesystem: false
-              allowPrivilegeEscalation: false
-              capabilities:
-                drop:
-                  - ALL
-              seccompProfile:
-                type: RuntimeDefault
-            resources:
-              requests:
-                cpu: 500m
-                memory: 1Gi
-        service:
-          ports:
-            - name: grpc
-              port: 50051
-              containerPort: 50051
-        volumes:
-          - name: data
-            emptyDir: {}
-
 pipelines:
   dev:
     flags:
@@ -154,7 +89,7 @@ pipelines:
         description: "Keep DevSpace running and stream logs"
     run: |-
       disable_argocd_sync
-      create_deployments agents
+      patch_deployment
       if [ "$(get_flag "watch")" == "true" ]; then
         start_dev --disable-pod-replace agents
       else
