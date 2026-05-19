@@ -56,5 +56,6 @@ jobs:
         run: devspace dev
       - uses: agynio/e2e/.github/actions/run-tests@main
         with:
-          tag: svc_gateway
+          service: agents
+          tag: svc_agents_orchestrator
           include_smoke: false
