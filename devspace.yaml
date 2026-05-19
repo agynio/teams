@@ -2,7 +2,7 @@ version: v2beta1
 
 vars:
   AGENTS_NAMESPACE: platform
-  E2E_IMAGE: ghcr.io/agynio/devcontainer-go:1
+  DEV_IMAGE: ghcr.io/agynio/devcontainer-go:1
 
 functions:
   disable_argocd_sync: |-
@@ -16,6 +16,10 @@ functions:
       echo "WARNING: ArgoCD Application 'agents' not found in argocd namespace."
     fi
   restore_argocd_sync: &restore_argocd_sync |-
+    if [ -n "${CI:-}" ]; then
+      echo "Skipping ArgoCD auto-sync restore in CI."
+      exit 0
+    fi
     if kubectl get application agents -n argocd >/dev/null 2>&1; then
       echo "Re-enabling ArgoCD auto-sync for agents..."
       kubectl patch application agents -n argocd \
@@ -27,7 +31,7 @@ functions:
     fi
   patch_deployment: |-
     echo "Patching agents deployment for DevSpace..."
-    kubectl patch deployment agents-agents -n ${AGENTS_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
+    kubectl patch deployment agents -n ${AGENTS_NAMESPACE} --type strategic --patch "$(cat <<'EOF'
     spec:
       template:
         spec:
@@ -40,8 +44,11 @@ functions:
               emptyDir: {}
           containers:
             - name: agents
-              image: ghcr.io/agynio/devcontainer-go:1 # keep in sync with E2E_IMAGE
+              image: ghcr.io/agynio/devcontainer-go:1 # keep in sync with DEV_IMAGE
               workingDir: /opt/app/data
+              livenessProbe: null
+              readinessProbe: null
+              startupProbe: null
               command:
                 - sh
                 - -c
@@ -77,26 +84,6 @@ functions:
     EOF
     )"
 
-deployments:
-  e2e-runner:
-    namespace: ${AGENTS_NAMESPACE}
-    helm:
-      chart:
-        name: component-chart
-        repo: https://charts.devspace.sh
-      values:
-        containers:
-          - image: ${E2E_IMAGE}
-            env:
-              - name: AGENTS_ADDR
-                value: "agents:50051"
-        labels:
-          app.kubernetes.io/name: agents-e2e
-
-commands:
-  test:e2e: |-
-    devspace run-pipeline test:e2e $@
-
 pipelines:
   dev:
     flags:
@@ -126,20 +113,6 @@ pipelines:
         echo "Dev environment ready. Stopping dev session."
         stop_dev agents
       fi
-
-  test:e2e:
-    run: |-
-      create_deployments e2e-runner
-      start_dev e2e-runner &
-      sleep 5
-      exec_container \
-        --label-selector "app.kubernetes.io/name=agents-e2e" \
-        -n ${AGENTS_NAMESPACE} \
-        -- bash -c 'cd /opt/app/data && buf generate buf.build/agynio/api --path agynio/api/agents/v1 --path agynio/api/authorization/v1 --path agynio/api/identity/v1 --path agynio/api/notifications/v1 && go test -v -count=1 -tags e2e ./test/e2e/'
-      EXIT_CODE=$?
-      stop_dev e2e-runner
-      purge_deployments e2e-runner
-      exit $EXIT_CODE
 
 hooks:
   - name: restore-argocd-auto-sync
@@ -171,6 +144,8 @@ dev:
               - .devspace/
               - /.gen/
               - /tmp/
+              - /e2e/
+              - /bootstrap/
             downloadExcludePaths:
               - .git/
               - .devspace/
@@ -181,17 +156,3 @@ dev:
           lastLines: 200
     ports:
       - port: "50051"
-
-  e2e-runner:
-    namespace: ${AGENTS_NAMESPACE}
-    labelSelector:
-      app.kubernetes.io/name: agents-e2e
-    command: ["sleep", "infinity"]
-    workingDir: /opt/app/data
-    sync:
-      - path: ./:/opt/app/data
-        excludePaths:
-          - .git/
-          - .devspace/
-          - /.gen/
-          - /tmp/

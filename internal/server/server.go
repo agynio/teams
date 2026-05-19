@@ -114,6 +114,10 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 	if req.GetInitImage() == "" {
 		return nil, status.Error(codes.InvalidArgument, "init_image is required")
 	}
+	availability, err := agentAvailabilityFromProto(req.GetAvailability())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "availability: %v", err)
+	}
 	creatorIDValue, err := identityIDFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -121,10 +125,6 @@ func (s *Server) CreateAgent(ctx context.Context, req *agentsv1.CreateAgentReque
 	creatorID, err := parseUUID(creatorIDValue)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "identity_id: %v", err)
-	}
-	availability, err := agentAvailabilityFromProto(req.GetAvailability())
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "availability: %v", err)
 	}
 	idleTimeout := defaultIdleTimeout
 	if req.IdleTimeout != nil {
