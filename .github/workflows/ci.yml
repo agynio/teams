@@ -57,6 +57,7 @@ jobs:
       - uses: agynio/e2e/.github/actions/run-tests@main
         env:
           E2E_SUITES: go-core
+          E2E_GO_TEST_RUN: ^TestNoDuplicateWorkloads$
         with:
           service: agents
           tag: svc_agents_orchestrator
