@@ -62,4 +62,3 @@ jobs:
           service: agents
           tag: svc_agents_orchestrator
           include_smoke: false
-          ref: noa/agents-availability-e2e
